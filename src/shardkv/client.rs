@@ -13,14 +13,14 @@ impl Clerk {
     }
 
     pub async fn get(&self, key: String) -> String {
-        todo!("get");
+        todo!("get")
     }
 
     pub async fn put(&self, key: String, value: String) {
-        todo!("put");
+        todo!("put")
     }
 
     pub async fn append(&self, key: String, value: String) {
-        todo!("append");
+        todo!("append")
     }
 }

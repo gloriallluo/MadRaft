@@ -14,6 +14,6 @@ impl State for ShardInfo {
     type Output = Option<Config>;
 
     fn apply(&mut self, cmd: Self::Command) -> Self::Output {
-        todo!("apply command");
+        todo!("apply command")
     }
 }

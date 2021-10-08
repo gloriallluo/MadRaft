@@ -1,4 +1,5 @@
 use super::raft::*;
+use super::raft_handle::*;
 use futures::StreamExt;
 use log::*;
 use madsim::{
@@ -28,7 +29,7 @@ pub struct RaftTester {
     t0: Instant,
 }
 
-pub const SNAPSHOT_INTERVAL: u64 = 10;
+pub const SNAPSHOT_INTERVAL: usize = 10;
 
 impl RaftTester {
     pub async fn new(n: usize) -> Self {
@@ -122,7 +123,6 @@ impl RaftTester {
     }
 
     /// Set the network unreliable.
-    ///
     /// Delay from 1ms to 27ms. Drop the packet with a probability of 10%.
     pub fn set_unreliable(&self, unreliable: bool) {
         self.handle.net.update_config(|cfg| {
@@ -239,13 +239,13 @@ impl RaftTester {
                 // submitted our command; wait a while for agreement.
                 let t1 = Instant::now();
                 while t1.elapsed() < Duration::from_secs(2) {
-                    let (nd, cmd1) = self.n_committed(index);
+                    let (nd, cmd1) = self.n_committed(index as u64);
                     if nd > 0 && nd >= expected_servers {
                         // committed
                         if let Some(cmd2) = cmd1 {
                             if cmd2 == cmd {
                                 // and it was the command we submitted.
-                                return index;
+                                return index as u64;
                             }
                         }
                     }
@@ -305,17 +305,17 @@ impl RaftTester {
                 match cmd {
                     ApplyMsg::Command { data, index } => {
                         debug!("server {} apply {}", i, index);
-                        let entry =
-                            bincode::deserialize(&data).expect("committed command is not an entry");
-                        storage.push_and_check(i, index, entry);
+                        let entry = bincode::deserialize(&data)
+                            .expect("committed command is not an entry");
+                        storage.push_and_check(i, index as u64, entry);
                         if snapshot && (index + 1) % SNAPSHOT_INTERVAL == 0 {
                             raft.snapshot(index, &data).await.unwrap();
                         }
                     }
                     ApplyMsg::Snapshot { data, index, term } if snapshot => {
                         // debug!("install snapshot {}", index);
-                        if raft.cond_install_snapshot(term, index, &data).await {
-                            storage.snapshot(i, index);
+                        if raft.cond_install_snapshot(term, index as u64, &data).await {
+                            storage.snapshot(i, index as u64);
                         }
                     }
                     // ignore other types of ApplyMsg

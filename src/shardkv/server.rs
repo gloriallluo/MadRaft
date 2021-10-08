@@ -32,6 +32,6 @@ impl State for ShardKv {
     type Output = Reply;
 
     fn apply(&mut self, cmd: Self::Command) -> Self::Output {
-        todo!("apply command");
+        todo!("apply command")
     }
 }

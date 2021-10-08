@@ -66,7 +66,7 @@ impl<S: State> Server<S> {
     }
 
     async fn apply(&self, cmd: S::Command) -> Result<S::Output, Error> {
-        todo!("apply command");
+        todo!("apply command")
     }
 }
 
@@ -82,6 +82,6 @@ impl State for Kv {
     type Output = String;
 
     fn apply(&mut self, cmd: Self::Command) -> Self::Output {
-        todo!("apply command");
+        todo!("apply command")
     }
 }

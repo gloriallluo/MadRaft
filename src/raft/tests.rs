@@ -41,7 +41,6 @@ async fn initial_election_2a() {
 
     // there should still be a leader.
     t.check_one_leader().await;
-
     t.end();
 }
 
@@ -80,7 +79,7 @@ async fn reelection_2a() {
 #[madsim::test]
 async fn many_election_2a() {
     let servers = 7;
-    let iters = 10;
+    let iters = 1;
     let t = RaftTester::new(servers).await;
 
     info!("Test (2A): multiple elections");
@@ -185,7 +184,7 @@ async fn fail_no_agree_2b() {
 
     time::sleep(2 * RAFT_ELECTION_TIMEOUT).await;
 
-    let (n, _) = t.n_committed(index);
+    let (n, _) = t.n_committed(index as u64);
     assert_eq!(n, 0, "{} committed but no majority", n);
 
     // repair
@@ -251,7 +250,7 @@ async fn concurrent_starts_2b() {
 
         let mut cmds = vec![];
         for index in idxes {
-            if let Some(cmd) = t.wait(index, servers, Some(term)).await {
+            if let Some(cmd) = t.wait(index as u64, servers, Some(term)).await {
                 cmds.push(cmd.x);
             } else {
                 // peers have moved on to later terms
@@ -441,7 +440,7 @@ async fn count_2b() {
         }
 
         for i in 1..=iters {
-            if let Some(ix) = t.wait(starti + i, servers, Some(term)).await {
+            if let Some(ix) = t.wait((starti + i) as u64, servers, Some(term)).await {
                 assert_eq!(
                     ix.x,
                     cmds[(i - 1) as usize],
@@ -697,7 +696,6 @@ async fn figure_8_unreliable_2c() {
 
     let mut nup = servers;
     for _iters in 0..1000 {
-        // TODO: long_reordering
         // if iters == 200 {
         //     t.set_long_reordering(true);
         // }
@@ -780,7 +778,7 @@ async fn internal_churn(unreliable: bool) {
                 // maybe leader will commit our value, maybe not.
                 // but don't wait forever.
                 for to in [10, 20, 50, 100, 200] {
-                    let (_, cmd) = t.n_committed(index);
+                    let (_, cmd) = t.n_committed(index as u64);
                     if let Some(cmd) = cmd {
                         if cmd == x {
                             values.push(cmd.x);

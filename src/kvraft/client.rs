@@ -56,8 +56,8 @@ where
                     Duration::from_millis(500),
                 )
                 .await;
-            todo!("handle RPC results");
+            todo!("handle RPC results")
         }
-        todo!("handle RPC results");
+        todo!("handle RPC results")
     }
 }
