@@ -1,4 +1,4 @@
-use futures::{channel::mpsc, stream::FuturesUnordered, StreamExt};
+use futures::{channel::mpsc, stream::FuturesUnordered, Future};
 use madsim::{
     fs, net,
     rand::{self, Rng},
@@ -11,7 +11,10 @@ use std::{
     sync::{Weak, Mutex},
     cmp::min
 };
-use crate::raft::{args::*, log::*};
+use crate::raft::{
+    args::*, log::*,
+    raft_handle::{Result, RPCResult},
+};
 use serde::{Deserialize, Serialize};
 
 
@@ -51,7 +54,7 @@ impl Default for Role {
 }
 
 
-/// Start ///
+/// # Start
 
 #[derive(Debug)]
 pub struct Start {
@@ -68,9 +71,6 @@ pub enum Error {
     #[error("IO error")]
     IO(#[from] io::Error),
 }
-
-pub type Result<T> = std::result::Result<T, Error>;
-
 
 /// # State
 
@@ -110,22 +110,20 @@ impl State {
 /// # Raft
 
 pub struct Raft {
-    pub(crate) peers: Vec<SocketAddr>,
-    pub(crate) me: usize,
+    pub(crate) me: usize, // FIXME: repeated
+    pub(crate) role: Role, // FIXME: repeated
     pub(crate) apply_ch: MsgSender,
-    pub(crate) role: Role,
-    pub(crate) task: Vec<Task<()>>,
     pub(crate) state: State,
-    pub(crate) myself: Weak<Mutex<Self>>,
     pub(crate) timer: Instant,
     pub(crate) snapshot: Vec<u8>,
+    pub(crate) common_sz: usize,
 }
 
 // HINT: put mutable non-async functions here
 impl Raft {
     pub(crate) fn start(&mut self, data: &[u8]) -> Result<Start> {
         if self.role != Role::Leader {
-            let leader = (self.me + 1) % self.peers.len(); // ???
+            let leader = (self.me + 1) % self.common_sz; // ?
             return Err(Error::NotLeader(leader));
         }
         // is leader
@@ -135,7 +133,7 @@ impl Raft {
         Ok(Start{ term, index })
     }
 
-    fn apply(&mut self) {
+    pub(crate) fn apply(&mut self) {
         while self.state.applied_index < self.state.commit_index {
             let index = self.state.applied_index;
             let log = self.state.logs[index].clone();
@@ -157,16 +155,7 @@ impl Raft {
         }
     }
 
-    fn election_timeout() -> Duration {
-        Duration::from_millis(rand::rng().gen_range(150..300))
-    }
-
-    fn heartbeat_timeout() -> Duration {
-        Duration::from_millis(50)
-    }
-
-    fn reset_state(&mut self, role: Role) {
-        self.task.clear();
+    pub(crate) fn reset_state(&mut self, role: Role) {
         self.timer = Instant::now();
         match role {
             Role::Leader => {
@@ -187,84 +176,75 @@ impl Raft {
         }
     }
 
-    /// ## Functions for different roles
+    /// ## Follower Timer Functions
 
-    pub(crate) fn run_leader(&mut self) {
-        self.reset_state(Role::Leader);
-        debug!("[{:?}] run_leader, term={:?}", self, self.state.term);
-
-        // 1. Send heartbeat AppendEntry RPC to followers.
-        let heartbeat_interval = Self::heartbeat_timeout();
-        for (i, &peer) in self.peers.iter().enumerate() {
-            if i == self.me { continue; }
-            let net = net::NetLocalHandle::current();
-            let ptr = self.myself.clone();
-            self.task.push(task::spawn(async move {
-                loop {
-                    loop {
-                        // Send AppendEntry to one of follower, until logs match.
-                        let step = 1;
-                        let new_next: usize;
-                        let args = {
-                            let ptr = ptr.upgrade().unwrap();
-                            let raft = ptr.lock().unwrap();
-                            new_next = raft.state.logs.len();
-                            // NOTE: `prev_log` is the beginning of log entries sent to follower.
-                            let prev_log_index = raft.state.next_index[i];
-                            let prev_log_term = if raft.state.logs.contains_index(prev_log_index) {
-                                raft.state.logs[prev_log_index].term
-                            } else {
-                                raft.state.term
-                            };
-                            AppendEntryArgs {
-                                term: raft.state.term,
-                                leader: raft.me,
-                                prev_log_term,
-                                prev_log_index,
-                                log_entries: raft.state.logs[raft.state.next_index[i]..].into(),
-                                leader_commit_index: raft.state.commit_index,
-                            }
-                        };  // lock dropped
-                        let reply = net.call::<AppendEntryArgs, AppendEntryReply>(peer, args)
-                            .await.unwrap();
-                        let ptr = ptr.upgrade().unwrap();
-                        let mut raft = ptr.lock().unwrap();
-                        if reply.success {
-                            // log entries match, update `next_index` and `match_index`.
-                            raft.state.next_index[i] = new_next;
-                            raft.state.match_index[i] = new_next;
-                            break;
-                        } else {
-                            // log entries don't match, `next_index` retrieves.
-                            raft.state.next_index[i] -= step;
-                        }
-                    }   // loop rpc
-                    sleep(heartbeat_interval).await;
-                }   // loop heartbeat
-            }));
-        }   // for
-
-        // 2. Update `commit_index` and apply.
-        let ptr = self.myself.clone();
-        self.task.push(task::spawn(async move {
-            loop {
-                sleep(Duration::from_millis(40)).await;
-                // update `commit_index` due to `match_index`, and apply logs.
-                let ptr = ptr.upgrade().unwrap();
-                let mut raft = ptr.lock().unwrap();
-                raft.update_commit_index();
-                raft.apply();
-            }
-        }));
+    pub(crate) fn get_timer(&self) -> Duration {
+        self.timer.elapsed()
     }
 
-    pub(crate) fn run_candidate(&mut self) {
-        self.reset_state(Role::Candidate);
-        debug!("[{:?}] run_candidate, term={}", self, self.state.term);
+    pub(crate) fn set_timer(&mut self) {
+        self.timer = Instant::now()
+    }
 
-        // 1. Send RequestVote RPC.
+    /// ## Functions for different roles
+
+    pub(crate) fn send_append_entry(&self, id: usize, addr: SocketAddr)
+        -> (impl Future<Output = RPCResult<AppendEntryReply>>, usize) {
+        let new_next = self.state.logs.len();
+        let args = {
+            // NOTE: `prev_log` is the beginning of log entries sent to follower.
+            let prev_log_index = self.state.next_index[id];
+            let prev_log_term = if self.state.logs.contains_index(prev_log_index) {
+                self.state.logs[prev_log_index].term
+            } else {
+                self.state.term
+            };
+            AppendEntryArgs {
+                term: self.state.term,
+                leader: self.me,
+                prev_log_term,
+                prev_log_index,
+                log_entries: self.state.logs[self.state.next_index[id]..].into(),
+                leader_commit_index: self.state.commit_index,
+            }
+        };
         let net = net::NetLocalHandle::current();
-        let mut rpcs = FuturesUnordered::new();
+        (
+            async move {
+                net.call::<AppendEntryArgs, AppendEntryReply>(addr, args).await
+            }, new_next
+        )
+    }
+
+    /// For leaders to handle AppendEntryReply.
+    ///
+    /// Return `true` if success, stop retrying.
+    pub(crate) fn handle_append_entry(&mut self, id: usize, reply: AppendEntryReply, new_next: usize) -> bool {
+        if reply.success {
+            // log entries match, update `next_index` and `match_index`.
+            self.state.next_index[id] = new_next;
+            self.state.match_index[id] = new_next;
+            true
+        } else {
+            // log entries don't match, `next_index` retrieves.
+            self.state.next_index[id] -= 1;
+            false
+        }
+    }
+
+    pub(crate) fn send_install_snapshot(&self) {
+        todo!("Send InstallSnapshotArgs")
+    }
+
+    pub(crate) fn handle_install_snapshot(&self) {
+        todo!("Handle InstallSnapshotReply")
+    }
+
+    /// For candidates to send RequestVoteArgs.
+    pub(crate) fn send_request_vote(&self, peers: &Vec<SocketAddr>)
+        -> FuturesUnordered<impl Future<Output = RPCResult<RequestVoteReply>>> {
+        let net = net::NetLocalHandle::current();
+        let rpcs = FuturesUnordered::new();
         let (last_log_term, last_log_index) = self.last_log_info();
         let args = RequestVoteArgs {
             term: self.state.term,
@@ -272,81 +252,34 @@ impl Raft {
             last_log_term,
             last_log_index,
         };
-        for (i, &peer) in self.peers.iter().enumerate() {
-            if i == self.me { continue; }
+        for &peer in peers.iter() {
             let net = net.clone();
             let args = args.clone();
             rpcs.push(async move {
                 net.call::<RequestVoteArgs, RequestVoteReply>(peer, args).await
             });
         }
-
-        // 2. Collect votes.
-        let majority = (self.peers.len() + 1) >> 1;
-        let ptr = self.myself.clone();
-        self.task.push(task::spawn(async move {
-            let mut count = 1;
-            while let Some(reply) = rpcs.next().await {
-                let ptr = ptr.upgrade().unwrap();
-                let mut raft = ptr.lock().unwrap();
-                let reply = reply.unwrap();
-                // update term
-                if reply.term > raft.state.term {
-                    info!("[{:?}] Receives reply from newer term, turns to follower.", raft);
-                    raft.state.term = reply.term;
-                    raft.state.voted_for = None;
-                    raft.run_follower();
-                }
-                if reply.vote_granted { count += 1; }
-                if count >= majority {
-                    info!("[{:?}] Wins election, turns to leader.", raft);
-                    raft.run_leader();
-                }
-            }
-            // lose election
-            let ptr = ptr.upgrade().unwrap();
-            let mut raft = ptr.lock().unwrap();
-            info!("[{:?}] Loses election, turn to follower.", raft);
-            raft.state.voted_for = None;
-            raft.run_follower();
-        }));
-
-        // 3. If timeout, start another election.
-        let ptr = self.myself.clone();
-        self.task.push(task::spawn(async move {
-            sleep(Self::election_timeout()).await;
-            let ptr = ptr.upgrade().unwrap();
-            let mut raft = ptr.lock().unwrap();
-            info!("[{:?}] Election timeout, start a new election.", raft);
-            raft.run_candidate();
-        }));
+        rpcs
     }
 
-    pub(crate) fn run_follower(&mut self) {
-        self.reset_state(Role::Follower);
-        debug!("[{:?}] run_follower", self);
-
-        // 1. Start an election when timeout.
-        let timeout = Self::election_timeout();
-        let ptr = self.myself.clone();
-        self.task.push(task::spawn(async move {
-            loop {
-                sleep(Duration::from_millis(20)).await;
-                let ptr = ptr.upgrade().unwrap();
-                let mut raft = ptr.lock().unwrap();
-                if raft.timer.elapsed() > timeout {
-                    info!("[{:?}] Election timeout, turns to Candidate.", raft);
-                    raft.run_candidate();
-                }
-            }
-        }));
+    /// For candidates to handle RequestVoteReply.
+    ///
+    /// Return true if role changes to follower.
+    /// Else stays candidate.
+    pub(crate) fn handle_request_vote(&mut self, reply: RequestVoteReply) -> bool {
+        if reply.term > self.state.term {
+            info!("Receives reply from newer term, turns to follower.");
+            self.state.term = reply.term;
+            self.state.voted_for = None;
+            return true;
+        }
+        false
     }
 
-    fn update_commit_index(&mut self) {
-        assert_eq!(self.role, Role::Leader);
+    pub(crate) fn update_commit_index(&mut self) {
         let mut sorted_match = self.state.match_index.clone();
         sorted_match.sort();
-        let mid = (self.peers.len() + 1) >> 1;
+        let mid = (self.common_sz + 1) >> 1;
         let commit_index = sorted_match[mid];
         if commit_index > self.state.commit_index
             && self.state.logs[commit_index - 1].term == self.state.term {
@@ -356,12 +289,11 @@ impl Raft {
 
     /// ## Reply requests
 
-    pub(crate) fn on_request_vote(&mut self, args: RequestVoteArgs) -> RequestVoteReply {
+    /// Handle RequestVote RPC.
+    ///
+    /// Return true if turns to follower.
+    pub(crate) fn on_request_vote(&mut self, args: RequestVoteArgs) -> (RequestVoteReply, bool) {
         let (prev_term, prev_index) = self.last_log_info();
-        // vote granted if:
-        // (1) candidate term is not stale;
-        // (2) haven't vote in this term or have voted for the specific candidate;
-        // (3) candidate's log is better than mine.
         let newer = args.term >= self.state.term;
         let not_voted = self.state.voted_for.is_none() || self.state.voted_for == Some(args.candidate);
         let log_term_wins = args.last_log_term > prev_term;
@@ -369,16 +301,20 @@ impl Raft {
         let vote_granted= newer && not_voted && (log_term_wins || log_index_wins);
         if vote_granted { self.state.voted_for = Some(args.candidate); }
         // If the candidate is in a newer term, turns to follower.
+        let mut to_follower = false;
         if args.term > self.state.term && self.role != Role::Follower {
             info!("[{:?}] Receive RequestVote from newer term, turn to follower.", self);
-            self.run_follower();
+            to_follower = true;
         }
         debug!("[{:?}] on_request_vote, candidate={} (term={}), vote_granted={}; \n\t\t\t\tnewer {}, not_voted {} ({:?}), log_term_wins {}, log_index_wins {}",
             self, args.candidate, args.term, vote_granted, newer, not_voted, self.state.voted_for, log_term_wins, log_index_wins);
-        RequestVoteReply { term: self.state.term, vote_granted }
+        (RequestVoteReply { term: self.state.term, vote_granted }, to_follower)
     }
 
-    pub(crate) fn on_append_entry(&mut self, args: AppendEntryArgs) -> AppendEntryReply {
+    /// Handle AppendEntry RPC.
+    ///
+    /// Return true if turns to follower.
+    pub(crate) fn on_append_entry(&mut self, args: AppendEntryArgs) -> (AppendEntryReply, bool) {
         // debug!("[{:?}] on_append_entry", self);
         let prev_index = self.state.logs.last_index().unwrap_or(0);
         let success = args.term >= self.state.term
@@ -391,10 +327,10 @@ impl Raft {
             self.state.voted_for = None;
         }
         if !success {
-            return AppendEntryReply { term: self.state.term, success };
+            return (AppendEntryReply { term: self.state.term, success }, false);
         }
         // reset follower timer
-        self.timer = Instant::now();
+        self.set_timer();
         // update commit_index
         if args.leader_commit_index > self.state.commit_index {
             self.state.commit_index = min(args.leader_commit_index, prev_index + 1);
@@ -409,25 +345,29 @@ impl Raft {
                 self.state.logs.push(log);
             }
         }
+        let mut to_follower = false;
         if self.role != Role::Follower {
             info!("[{:?}] Receive AppendEntry, turn to follower.", self);
-            self.run_follower();
+            to_follower = true;
         }
-        AppendEntryReply { term: self.state.term, success }
+        (AppendEntryReply { term: self.state.term, success }, to_follower)
     }
 
-    pub(crate) fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
+    /// Handle AppendEntry RPC.
+    ///
+    /// Return true if turns to follower.
+    pub(crate) fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> (InstallSnapshotReply, bool) {
         debug!("[{:?}] on_install_snapshot", self);
         let reply = InstallSnapshotReply { term: self.state.term };
-        if self.state.term > args.term { return reply; }
-        self.task.push(task::spawn(async move {
+        if self.state.term > args.term { return (reply, false); }
+        task::spawn(async move {
             let file = fs::File::create("snapshot").await.unwrap();
             file.write_all_at(&args.data, args.offset as u64).await
                 .expect("File write_all_at failed");
             file.sync_all().await
                 .expect("File sync_all failed");
-        }));
-        reply
+        }).detach();
+        (reply, false)
     }
 }
 

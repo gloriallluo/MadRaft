@@ -1,6 +1,5 @@
 use std::ops::{Range, Index, IndexMut, RangeFrom};
 use serde::{Deserialize, Serialize};
-use log::Log;
 
 /// # LogEntry
 
