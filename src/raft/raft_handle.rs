@@ -1,5 +1,5 @@
 use std::{
-    io, result,
+    io, fmt, result,
     sync::{Arc, Mutex, Weak},
     net::SocketAddr,
 };
@@ -61,7 +61,6 @@ impl RaftHandle {
         let size = peers.len();
         let inner = Arc::new(Mutex::new(Raft {
             me,
-            role: Role::Follower,
             apply_ch,
             state: State::new(size),
             timer: Instant::now(),
@@ -95,8 +94,9 @@ impl RaftHandle {
         raft.start(cmd)
     }
 
-    async fn run(&mut self) {
+    async fn run(&self) {
         loop {
+            // debug!("[{}] run", self.me);
             let new_role = match self.get_role() {
                 Role::Leader => {
                     self.inner.lock().unwrap().reset_state(Role::Leader);
@@ -125,7 +125,6 @@ impl RaftHandle {
 
     /// ## leader functions
 
-    // FIXME: Can other tasks be dropped when the function returns?
     async fn run_leader(&self) -> Role {
         let mut heartbeat_tasks = FuturesUnordered::new();
         self.peers
@@ -151,27 +150,45 @@ impl RaftHandle {
 
     /// Send AppendEntry or InstallSnapshot to followers
     async fn heartbeat(&self, id: usize) -> HandleResult {
-        let heartbeat_interval = Self::heartbeat_timeout();
         loop {
             // Send heartbeat messages to follower every 50 milliseconds.
+            let role = self.get_role();
+            // debug!("[{}] my role is {:?}", self.me, role);
+            if role != Role::Leader {
+                // debug!("[{}] hb({}) role change!", self.me, id);
+                return HandleResult::RoleChange(role);
+            }
+            // debug!("[{}] send heartbeat to {}", self.me, id);
             loop {
                 // Try until logs match
                 let (rpc, new_next) = {
                     let inner = self.inner.lock().unwrap();
                     inner.send_append_entry(id, self.peers[id])
                 };
-                let reply = rpc.await.unwrap();
-                let mut inner = self.inner.lock().unwrap();
-                if inner.handle_append_entry(id, reply, new_next) { break; }
+                let timeout = sleep(Self::rpc_timeout()).fuse();
+                let rpc = rpc.fuse();
+                pin_mut!(rpc, timeout);
+                select_biased! {
+                    _ = timeout => break,
+                    reply = rpc => {
+                        match reply {
+                            Ok(reply) => {
+                                let mut inner = self.inner.lock().unwrap();
+                                if inner.handle_append_entry(id, reply, new_next) { break; }
+                            },
+                            Err(_) => break,
+                        }
+                    },
+                }
             }
             // Heartbeat interval
-            sleep(heartbeat_interval).await;
+            sleep(Self::heartbeat_timeout()).await;
         }
     }
 
     async fn apply(&self) {
         loop {
-            // Update commit_index every 100 ms.
+            // Update commit_index every 100 milli seconds.
             sleep(Duration::from_millis(100)).await;
             // update `commit_index` due to `match_index`, and apply logs.
             let mut inner = self.inner.lock().unwrap();
@@ -183,8 +200,8 @@ impl RaftHandle {
     /// ## Candidate functions
 
     async fn run_candidate(&self) -> Role {
-        let mut vote_request = self.vote_request().fuse();
-        let mut timer = self.candidate_timer().fuse();
+        let vote_request = self.vote_request().fuse();
+        let timer = self.candidate_timer().fuse();
         pin_mut!(vote_request, timer);
         loop {
             select_biased! {
@@ -202,7 +219,7 @@ impl RaftHandle {
 
     async fn vote_request(&self) -> HandleResult {
         // send RequestVote
-        let mut peer_without_me = self.peers
+        let peer_without_me = self.peers
             .iter()
             .enumerate()
             .filter(|(i, _)| i != &self.me)
@@ -223,14 +240,14 @@ impl RaftHandle {
             if inner.handle_request_vote(reply) {
                 return HandleResult::RoleChange(Role::Follower);
             }
-            if count >= majority {
-                info!("Wins election, turns to leader.");
+            if count >= majority && self.get_role() == Role::Candidate {
+                info!("[{}] Wins election, turns to leader.", self.me);
                 return HandleResult::RoleChange(Role::Leader);
             }
         }
         // lose election
         let mut inner = self.inner.lock().unwrap();
-        info!("Loses election, turn to follower.");
+        info!("[{}] Loses election, turn to follower.", self.me);
         inner.state.voted_for = None;
         HandleResult::RoleChange(Role::Follower)
     }
@@ -243,7 +260,7 @@ impl RaftHandle {
     /// ## Follower functions
 
     async fn run_follower(&self) -> Role {
-        let mut timer = self.follower_timer().fuse();
+        let timer = self.follower_timer().fuse();
         pin_mut!(timer);
         select_biased! {
             res = timer => match res {
@@ -254,12 +271,12 @@ impl RaftHandle {
     }
 
     async fn follower_timer(&self) ->HandleResult {
-        let timeout = Self::election_timeout();
         loop {
-            sleep(Duration::from_millis(20)).await;
+            let timeout = Self::election_timeout();
+            sleep(timeout).await;
             let inner = self.inner.lock().unwrap();
             if inner.get_timer() > timeout {
-                info!("Election timeout, turns to Candidate.");
+                info!("[{}] Election timeout, turns to Candidate.", self.me);
                 return HandleResult::RoleChange(Role::Candidate);
             }
         }
@@ -273,8 +290,7 @@ impl RaftHandle {
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        let raft = self.inner.lock().unwrap();
-        raft.role == Role::Leader
+        *self.role.lock().unwrap() == Role::Leader
     }
 
     /// The service says it has created a snapshot that has all info up to and
@@ -377,6 +393,7 @@ impl RaftHandle {
     }
 
     async fn on_append_entry(&self, args: AppendEntryArgs) -> Result<AppendEntryReply> {
+        // debug!("[{}] on_append_entry", self.me);
         let (reply, to_follower) = {
             let mut this = self.inner.lock().unwrap();
             this.on_append_entry(args)
@@ -411,5 +428,15 @@ impl RaftHandle {
 
     fn heartbeat_timeout() -> Duration {
         Duration::from_millis(50)
+    }
+
+    fn rpc_timeout() -> Duration {
+        Duration::from_millis(20)
+    }
+}
+
+impl fmt::Debug for RaftHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{}: {:?}>", self.me, self.role)
     }
 }

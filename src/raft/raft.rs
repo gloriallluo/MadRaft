@@ -110,8 +110,8 @@ impl State {
 /// # Raft
 
 pub struct Raft {
-    pub(crate) me: usize, // FIXME: repeated
-    pub(crate) role: Role, // FIXME: repeated
+    pub(crate) me: usize,
+    // pub(crate) role: Role,
     pub(crate) apply_ch: MsgSender,
     pub(crate) state: State,
     pub(crate) timer: Instant,
@@ -122,10 +122,11 @@ pub struct Raft {
 // HINT: put mutable non-async functions here
 impl Raft {
     pub(crate) fn start(&mut self, data: &[u8]) -> Result<Start> {
-        if self.role != Role::Leader {
-            let leader = (self.me + 1) % self.common_sz; // ?
-            return Err(Error::NotLeader(leader));
-        }
+        // FIXME
+        // if self.role != Role::Leader {
+        //     let leader = (self.me + 1) % self.common_sz; // ?
+        //     return Err(Error::NotLeader(leader));
+        // }
         // is leader
         let term = self.state.term;
         let index = if let Some(e) = self.state.logs.last() { e.index + 1 } else { 0 };
@@ -159,19 +160,19 @@ impl Raft {
         self.timer = Instant::now();
         match role {
             Role::Leader => {
-                self.role = Role::Leader;
+                // self.role = Role::Leader;
                 let first_index = self.state.logs.first_index().unwrap_or(0);
                 let last_index = self.state.logs.last_index().unwrap_or(self.state.logs.len());
                 self.state.next_index.fill(last_index);
                 self.state.match_index.fill(first_index);
             },
             Role::Candidate => {
-                self.role = Role::Candidate;
+                // self.role = Role::Candidate;
                 self.state.term += 1;
                 self.state.voted_for = Some(self.me);
             },
             Role::Follower => {
-                self.role = Role::Follower;
+                // self.role = Role::Follower;
             },
         }
     }
@@ -227,7 +228,9 @@ impl Raft {
             true
         } else {
             // log entries don't match, `next_index` retrieves.
-            self.state.next_index[id] -= 1;
+            if self.state.next_index[id] > 0 {
+                self.state.next_index[id] -= 1;
+            }
             false
         }
     }
@@ -293,19 +296,30 @@ impl Raft {
     ///
     /// Return true if turns to follower.
     pub(crate) fn on_request_vote(&mut self, args: RequestVoteArgs) -> (RequestVoteReply, bool) {
-        let (prev_term, prev_index) = self.last_log_info();
+        // 1. newer term
         let newer = args.term >= self.state.term;
+        // If the candidate is in a newer term, turns to follower.
+        let to_follower = if args.term > self.state.term {
+            info!("[{:?}] Receive RequestVote from newer term, turn to follower.", self);
+            self.state.term = args.term;
+            self.state.voted_for = None;
+            true
+        } else {
+            false
+        };
+
+        // 2. didn't vote in this term
         let not_voted = self.state.voted_for.is_none() || self.state.voted_for == Some(args.candidate);
+
+        // 3. logs
+        let (prev_term, prev_index) = self.last_log_info();
         let log_term_wins = args.last_log_term > prev_term;
         let log_index_wins = args.last_log_term == prev_term && args.last_log_index >= prev_index;
+
         let vote_granted= newer && not_voted && (log_term_wins || log_index_wins);
         if vote_granted { self.state.voted_for = Some(args.candidate); }
-        // If the candidate is in a newer term, turns to follower.
-        let mut to_follower = false;
-        if args.term > self.state.term && self.role != Role::Follower {
-            info!("[{:?}] Receive RequestVote from newer term, turn to follower.", self);
-            to_follower = true;
-        }
+        // reset follower timer
+        self.set_timer();
         debug!("[{:?}] on_request_vote, candidate={} (term={}), vote_granted={}; \n\t\t\t\tnewer {}, not_voted {} ({:?}), log_term_wins {}, log_index_wins {}",
             self, args.candidate, args.term, vote_granted, newer, not_voted, self.state.voted_for, log_term_wins, log_index_wins);
         (RequestVoteReply { term: self.state.term, vote_granted }, to_follower)
@@ -315,17 +329,22 @@ impl Raft {
     ///
     /// Return true if turns to follower.
     pub(crate) fn on_append_entry(&mut self, args: AppendEntryArgs) -> (AppendEntryReply, bool) {
-        // debug!("[{:?}] on_append_entry", self);
         let prev_index = self.state.logs.last_index().unwrap_or(0);
         let success = args.term >= self.state.term
             && (args.prev_log_index == 0
             || self.state.logs.contains_index(args.prev_log_index - 1)
             && self.state.logs[args.prev_log_index - 1].term == args.prev_log_term);
-        // new leader is elected
-        if args.term > self.state.term {
+        debug!("[{:?}] on_append_entry of term {}, my term is {}, success = {}",
+            self, args.term, self.state.term, success);
+
+        let to_follower = if args.term > self.state.term {
             self.state.term = args.term;
             self.state.voted_for = None;
-        }
+            true
+        } else {
+            false
+        };
+
         if !success {
             return (AppendEntryReply { term: self.state.term, success }, false);
         }
@@ -344,11 +363,6 @@ impl Raft {
             } else {
                 self.state.logs.push(log);
             }
-        }
-        let mut to_follower = false;
-        if self.role != Role::Follower {
-            info!("[{:?}] Receive AppendEntry, turn to follower.", self);
-            to_follower = true;
         }
         (AppendEntryReply { term: self.state.term, success }, to_follower)
     }
@@ -373,8 +387,7 @@ impl Raft {
 
 impl fmt::Debug for Raft {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<{}: {:?}>, term {}",
-               self.me, self.role, self.state.term)
+        write!(f, "<{}>, term {}", self.me, self.state.term)
     }
 }
 

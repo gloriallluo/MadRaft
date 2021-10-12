@@ -75,6 +75,7 @@ impl RaftTester {
                 }
                 let rafts = self.rafts.lock().unwrap();
                 let raft = &rafts[i].as_ref().unwrap();
+                debug!("{:?}", *raft);
                 if raft.is_leader() {
                     leaders.entry(raft.term()).or_default().push(i);
                 }
@@ -83,6 +84,9 @@ impl RaftTester {
                 if leaders.len() > 1 {
                     panic!("term {} has {:?} (>1) leaders", term, leaders);
                 }
+                // else {
+                //     debug!("term {} leader is {:?}", term, leaders);
+                // }
             }
             if !leaders.is_empty() {
                 let last_term_with_leader = leaders.keys().max().unwrap();
