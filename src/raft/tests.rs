@@ -57,7 +57,7 @@ async fn reelection_2a() {
 
     // if the old leader rejoins, that shouldn't disturb the new leader.
     t.connect(leader1);
-    let leader2 = t.check_one_leader().await; // FIXME
+    let leader2 = t.check_one_leader().await;
 
     // if there's no quorum, no leader should be elected.
     t.disconnect(leader2);
@@ -67,7 +67,7 @@ async fn reelection_2a() {
 
     // if a quorum arises, it should elect a leader.
     t.connect((leader2 + 1) % servers);
-    t.check_one_leader().await; // FIXME
+    t.check_one_leader().await;
 
     // re-join of last node shouldn't prevent leader from existing.
     t.connect(leader2);
@@ -98,7 +98,7 @@ async fn many_election_2a() {
 
         // either the current leader should still be alive,
         // or the remaining four should elect a new one.
-        t.check_one_leader().await; // fixme
+        t.check_one_leader().await;
 
         t.connect(i1);
         t.connect(i2);

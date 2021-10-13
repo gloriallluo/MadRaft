@@ -75,7 +75,6 @@ impl RaftTester {
                 }
                 let rafts = self.rafts.lock().unwrap();
                 let raft = &rafts[i].as_ref().unwrap();
-                debug!("{:?}", *raft);
                 if raft.is_leader() {
                     leaders.entry(raft.term()).or_default().push(i);
                 }
@@ -84,9 +83,6 @@ impl RaftTester {
                 if leaders.len() > 1 {
                     panic!("term {} has {:?} (>1) leaders", term, leaders);
                 }
-                // else {
-                //     debug!("term {} leader is {:?}", term, leaders);
-                // }
             }
             if !leaders.is_empty() {
                 let last_term_with_leader = leaders.keys().max().unwrap();
@@ -234,7 +230,7 @@ impl RaftTester {
                         index = Some(start.index);
                         break;
                     }
-                    Err(e) => debug!("start cmd {:?} failed: {:?}", cmd, e),
+                    Err(e) =>  {},
                 }
             }
 
@@ -244,6 +240,7 @@ impl RaftTester {
                 let t1 = Instant::now();
                 while t1.elapsed() < Duration::from_secs(2) {
                     let (nd, cmd1) = self.n_committed(index as u64);
+                    // debug!("nd = {}, cmd1 = {:?}", nd, cmd1);
                     if nd > 0 && nd >= expected_servers {
                         // committed
                         if let Some(cmd2) = cmd1 {
@@ -308,16 +305,15 @@ impl RaftTester {
             while let Some(cmd) = apply_recver.next().await {
                 match cmd {
                     ApplyMsg::Command { data, index } => {
-                        debug!("server {} apply {}", i, index);
                         let entry = bincode::deserialize(&data)
                             .expect("committed command is not an entry");
+                        debug!("server {} apply {} ({:?})", i, index, entry);
                         storage.push_and_check(i, index as u64, entry);
                         if snapshot && (index + 1) % SNAPSHOT_INTERVAL == 0 {
                             raft.snapshot(index, &data).await.unwrap();
                         }
                     }
                     ApplyMsg::Snapshot { data, index, term } if snapshot => {
-                        // debug!("install snapshot {}", index);
                         if raft.cond_install_snapshot(term, index as u64, &data).await {
                             storage.snapshot(i, index as u64);
                         }
@@ -381,6 +377,7 @@ impl StorageHandle {
     }
 
     fn push_and_check(&self, i: usize, index: u64, entry: Entry) {
+        // debug!("server {} push_and_check index {}: {:?}", i, index, entry);
         let mut logs = self.logs.lock().unwrap();
         for (j, log) in logs.iter().enumerate() {
             if let Some(Some(old)) = log.get(index as usize) {
@@ -397,6 +394,8 @@ impl StorageHandle {
             panic!("server {} apply out of order {}", i, index);
         } else if index as usize == log.len() {
             log.push(Some(entry));
+        } else {
+            debug!("index {} and log length {} does not match!", index, log.len());
         }
     }
 

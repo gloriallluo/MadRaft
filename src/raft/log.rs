@@ -1,9 +1,10 @@
 use std::ops::{Range, Index, IndexMut, RangeFrom};
+use std::fmt::{self, Debug, Formatter};
 use serde::{Deserialize, Serialize};
 
 /// # LogEntry
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub(crate) term: u64,
     pub(crate) index: usize,
@@ -16,11 +17,17 @@ impl Default for LogEntry {
     }
 }
 
+impl Debug for LogEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{{ term: {}, index: {} }}", self.term, self.index)
+    }
+}
+
 
 /// # Logs
 /// Its' index may be different from its' real ones.
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Logs {
     offset: usize,
     logs: Vec<LogEntry>,
@@ -33,6 +40,14 @@ impl Logs {
 
     pub fn len(&self) -> usize {
         self.logs.len()
+    }
+
+    pub fn head(&self) -> usize {
+        self.offset
+    }
+
+    pub fn tail(&self) -> usize {
+        self.offset + self.logs.len()
     }
 
     pub fn contains_index(&self, index: usize) -> bool {
@@ -65,7 +80,8 @@ impl Logs {
 
 impl Default for Logs {
     fn default() -> Self {
-        Self { offset: 0, logs: Vec::new(), }
+        // Add an empty log entry at start, to be consistent with tester.
+        Self { offset: 0, logs: vec![LogEntry::default()], }
     }
 }
 
@@ -116,5 +132,11 @@ impl From<Vec<LogEntry>> for Logs {
 impl Into<Vec<LogEntry>> for Logs {
     fn into(self) -> Vec<LogEntry> {
         self.logs
+    }
+}
+
+impl Debug for Logs {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Logs({}..{})", self.offset, self.offset + self.len())
     }
 }
