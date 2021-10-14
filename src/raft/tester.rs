@@ -264,14 +264,14 @@ impl RaftTester {
 
     /// detach server i from the net.
     pub fn disconnect(&self, i: usize) {
-        debug!("disconnect({})", i);
+        info!("disconnect({})", i);
         self.connected[i].store(false, Ordering::SeqCst);
         self.handle.net.disconnect(self.addrs[i]);
     }
 
     /// attach server i to the net.
     pub fn connect(&self, i: usize) {
-        debug!("connect({})", i);
+        info!("connect({})", i);
         self.connected[i].store(true, Ordering::SeqCst);
         self.handle.net.connect(self.addrs[i]);
     }
@@ -307,7 +307,7 @@ impl RaftTester {
                     ApplyMsg::Command { data, index } => {
                         let entry = bincode::deserialize(&data)
                             .expect("committed command is not an entry");
-                        debug!("server {} apply {} ({:?})", i, index, entry);
+                        debug!("server {} apply {}: {:?}", i, index, entry);
                         storage.push_and_check(i, index as u64, entry);
                         if snapshot && (index + 1) % SNAPSHOT_INTERVAL == 0 {
                             raft.snapshot(index, &data).await.unwrap();
@@ -327,7 +327,7 @@ impl RaftTester {
     }
 
     pub fn crash1(&self, i: usize) {
-        debug!("crash({})", i);
+        info!("crash({})", i);
         self.handle.kill(self.addrs[i]);
         self.rafts.lock().unwrap()[i] = None;
     }

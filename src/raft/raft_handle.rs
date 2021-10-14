@@ -24,6 +24,7 @@ struct Persist {
     voted_for: Option<usize>,
     logs: Vec<LogEntry>,
 }
+
 /// Snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
@@ -56,8 +57,9 @@ impl RaftHandle {
             apply_ch,
             state: State::new(size),
             timer: Instant::now(),
-            snapshot: Vec::new(),
             common_sz: peers.len(),
+            last_included_log: None,
+            snapshot: Vec::new(),
         }));
         let handle = RaftHandle {
             me,
@@ -81,7 +83,6 @@ impl RaftHandle {
     /// Raft log, since the leader may fail or lose an election.
     pub async fn start(&self, cmd: &[u8]) -> Result<Start> {
         let mut raft = self.inner.lock().unwrap();
-        // info!("{:?} start", *raft);
         raft.start(cmd)
     }
 
@@ -108,10 +109,6 @@ impl RaftHandle {
         self.inner.lock().unwrap().role
     }
 
-    fn set_role(&self, role: Role) {
-        self.inner.lock().unwrap().role = role;
-    }
-
     /// ## leader functions
 
     async fn run_leader(&self) {
@@ -124,11 +121,13 @@ impl RaftHandle {
                 heartbeat_tasks.push(self.heartbeat(i));
             });
         let apply_task = self.apply().fuse();
-        pin_mut!(apply_task);
+        let persist_task = self.leader_persist().fuse();
+        pin_mut!(apply_task, persist_task);
         loop {
             select_biased! {
                 () = heartbeat_tasks.select_next_some() => return,
                 () = apply_task => {},
+                () = persist_task => {},
                 complete => {},
             }
         }
@@ -139,35 +138,84 @@ impl RaftHandle {
         loop {
             // Send heartbeat messages to follower every 50 milliseconds.
             let mut step: usize = 1;
+            let mut offset: usize = 0;
+            let mut append_entry = true;
             loop {
-                // Try until logs match
-                let (rpc, new_next) = {
-                    let inner = self.inner.lock().unwrap();
-                    if inner.role != Role::Leader { return; }
-                    inner.send_append_entry(id, self.peers[id])
-                };
-                let timeout = sleep(Self::rpc_timeout()).fuse();
-                let rpc = rpc.fuse();
-                pin_mut!(rpc, timeout);
-                select_biased! {
-                    _ = timeout => break,
-                    reply = rpc => {
-                        match reply {
-                            Ok(reply) => {
-                                let mut inner = self.inner.lock().unwrap();
-                                match inner.handle_append_entry(id, reply, new_next, step) {
-                                    // AppendEntry accepted
-                                    0 => break,
-                                    // retry due to log mismatch
-                                    1 => { step <<= 1; continue; },
-                                    // turn follower
-                                    2 => return,
-                                    _ => {},
-                                }
-                            },
-                            Err(_) => break,
+                if append_entry {
+                    // Try until logs match
+                    let (rpc, new_next) = {
+                        let inner = self.inner.lock().unwrap();
+                        if inner.role != Role::Leader { return; }
+                        if inner.state.next_index[id] < inner.state.logs.begin() {
+                            append_entry = false;
+                            continue;
                         }
-                    },
+                        // debug!("[{}] heartbeat: append entry to {}, logs from {}, leader log {:?}",
+                        //     self.me, id, inner.state.next_index[id], inner.state.logs);
+                        inner.send_append_entry(id, self.peers[id])
+                    };
+
+                    let timeout = sleep(Self::rpc_timeout()).fuse();
+                    let rpc = rpc.fuse();
+                    pin_mut!(rpc, timeout);
+                    select_biased! {
+                        _ = timeout => continue,
+                        reply = rpc => {
+                            match reply {
+                                Ok(reply) => {
+                                    let mut inner = self.inner.lock().unwrap();
+                                    match inner.handle_append_entry(id, reply, new_next, step) {
+                                        // AppendEntry accepted.
+                                        0 => break,
+                                        // retry due to log mismatch.
+                                        1 => { step <<= 1; continue; },
+                                        // follower lag too much, send snapshot.
+                                        2 => { append_entry = false; continue; },
+                                        // turn follower
+                                        -1 => return,
+                                        _ => {},
+                                    }
+                                },
+                                Err(_) => continue,
+                            }
+                        },
+                    }
+                } else {
+                    // Send snapshot to follower.
+                    let (rpc, done, new_next) = {
+                        let inner = self.inner.lock().unwrap();
+                        if inner.role != Role::Leader { return; }
+                        inner.send_install_snapshot(self.peers[id], offset)
+                    };
+
+                    let timeout = sleep(Self::rpc_timeout()).fuse();
+                    let rpc = rpc.fuse();
+                    pin_mut!(rpc, timeout);
+                    select_biased! {
+                        _ = timeout => continue,
+                        reply = rpc => {
+                            match reply {
+                                Ok(reply) => {
+                                    let mut inner = self.inner.lock().unwrap();
+                                    match inner.handle_install_snapshot(reply, id, new_next) {
+                                        // InstallSnapshot accepted.
+                                        0 => {
+                                            if done {
+                                                break;
+                                            } else {
+                                                offset += SNAPSHOT_SIZE;
+                                                continue;
+                                            }
+                                        },
+                                        // turn follower
+                                        -1 => return,
+                                        _ => {},
+                                    }
+                                },
+                                Err(_) => continue,
+                            }
+                        },
+                    }
                 }
             } // loop retry
             // Heartbeat interval
@@ -177,12 +225,20 @@ impl RaftHandle {
 
     async fn apply(&self) {
         loop {
-            // Update commit_index every 100 milli seconds.
+            // Update commit_index every 100 milliseconds.
             sleep(Duration::from_millis(100)).await;
             // update `commit_index` due to `match_index`, and apply logs.
             let mut inner = self.inner.lock().unwrap();
             inner.update_commit_index();
             inner.apply();
+        }
+    }
+
+    async fn leader_persist(&self) {
+        loop {
+            // persist every 80 milliseconds
+            sleep(Duration::from_millis(80)).await;
+            self.persist().await;
         }
     }
 
@@ -193,8 +249,8 @@ impl RaftHandle {
         let timer = self.candidate_timer().fuse();
         pin_mut!(vote_request, timer);
         select_biased! {
-            _ = vote_request => return,
-            _ = timer => return,
+            () = vote_request => return,
+            () = timer => return,
         }
     }
 
@@ -216,20 +272,26 @@ impl RaftHandle {
         // collect votes
         let majority = (self.peers.len() + 1) >> 1;
         let mut count = 1;
-        while let Some(reply) = rpcs.next().await {
-            let reply = reply.unwrap();
-            if reply.vote_granted { count += 1; }
-            let mut inner = self.inner.lock().unwrap();
-            if inner.handle_request_vote(reply) { return; }
-            if count >= majority && inner.role == Role::Candidate {
-                info!("[{}] Wins election, turns to leader.", self.me);
-                inner.role = Role::Leader;
-                return;
+        loop {
+            select_biased! {
+                reply = rpcs.select_next_some() => {
+                    // info!("got reply: {:?}", reply);
+                    let reply = reply.unwrap();
+                    if reply.vote_granted { count += 1; }
+                    let mut inner = self.inner.lock().unwrap();
+                    if inner.handle_request_vote(reply) { return; }
+                    if count >= majority && inner.role == Role::Candidate {
+                        info!("[{}] Wins election, turns to leader.", self.me);
+                        inner.role = Role::Leader;
+                        return;
+                    }
+                },
+                complete => break,
             }
         }
         // lose election
         let mut inner = self.inner.lock().unwrap();
-        info!("[{}] Loses election, turn to follower.", self.me);
+        info!("[{:?}] Loses election, turn to follower.", inner);
         inner.role = Role::Follower;
         inner.state.voted_for = None;
     }
@@ -244,18 +306,22 @@ impl RaftHandle {
         let timer = self.follower_timer().fuse();
         pin_mut!(timer);
         select_biased! {
-            _ = timer => return,
+            () = timer => return,
         }
     }
 
     async fn follower_timer(&self) {
         loop {
             let timeout = Self::election_timeout();
-            sleep(timeout).await;
+            let deadline = {
+                let inner = self.inner.lock().unwrap();
+                inner.timer + timeout
+            };
+            sleep_until(deadline).await;
             let inner = self.inner.lock().unwrap();
-            if inner.get_timer() > timeout {
-                info!("[{}] Election timeout, turns to Candidate. term = {}, log = {:?}",
-                      self.me, inner.state.term, inner.state.logs);
+            if inner.get_timer() >= timeout {
+                info!("[{:?}] Election timeout, turns to Candidate. term = {}, log = {:?}",
+                      inner, inner.state.term, inner.state.logs);
                 let mut inner = inner;
                 inner.role = Role::Candidate;
                 return;
@@ -265,8 +331,8 @@ impl RaftHandle {
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        let raft = self.inner.lock().unwrap();
-        raft.state.term
+        let inner = self.inner.lock().unwrap();
+        inner.state.term
     }
 
     /// Whether this peer believes it is the leader.
@@ -280,8 +346,13 @@ impl RaftHandle {
     pub async fn snapshot(&self, index: usize, snapshot: &[u8]) -> Result<()> {
         {
             let mut inner = self.inner.lock().unwrap();
+            assert!(index < inner.state.commit_index);
+            debug!("[{:?}] snapshot index {}, my commit_index {}",
+                inner, index, inner.state.commit_index);
             inner.snapshot = snapshot.into();
+            inner.last_included_log = Some(inner.state.logs[index].to_owned());
             inner.state.logs.trim(index);
+            debug!("[{:?}] logs after trim: {:?}", inner, inner.state.logs);
         }
         self.persist().await?;
         Ok(())
@@ -294,6 +365,7 @@ impl RaftHandle {
     async fn persist(&self) -> io::Result<()> {
         let (state, snapshot) = {
             let inner = self.inner.lock().unwrap();
+            // debug!("[{:?}] logs {:?} persisted", self, inner.state.logs);
             let persist: Persist = Persist {
                 term: inner.state.term,
                 voted_for: inner.state.voted_for,
@@ -317,7 +389,8 @@ impl RaftHandle {
     /// Restore previously persisted state.
     async fn restore(&self) -> io::Result<()> {
         match fs::read("snapshot").await {
-            Ok(snapshot) => {
+            Ok(snapshot) => if snapshot.len() > 0 {
+                // FIXME: broken snapshot
                 let snapshot: Snapshot = bincode::deserialize(&snapshot).unwrap();
                 let mut inner = self.inner.lock().unwrap();
                 inner.snapshot = snapshot.data;
@@ -332,6 +405,7 @@ impl RaftHandle {
                 inner.state.term = persist.term;
                 inner.state.voted_for = persist.voted_for;
                 inner.state.logs = Logs::from(persist.logs);
+                debug!("[{:?}] logs {:?} restored", self, inner.state.logs);
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
@@ -368,7 +442,8 @@ impl RaftHandle {
         };
         // if you need to persist or call async functions here,
         // make sure the lock is scoped and dropped.
-        self.persist().await.expect("Failed to persist");
+        let this = self.clone();
+        task::spawn(async move { this.persist().await }).detach();
         Ok(reply)
     }
 
@@ -378,6 +453,8 @@ impl RaftHandle {
             let mut this = self.inner.lock().unwrap();
             this.on_append_entry(args)
         };
+        let this = self.clone();
+        task::spawn(async move { this.persist().await }).detach();
         Ok(reply)
     }
 
@@ -386,6 +463,8 @@ impl RaftHandle {
             let mut this = self.inner.lock().unwrap();
             this.on_install_snapshot(args)
         };
+        let this = self.clone();
+        task::spawn(async move { this.persist().await }).detach();
         Ok(reply)
     }
 
@@ -395,10 +474,12 @@ impl RaftHandle {
     pub async fn cond_install_snapshot(
         &self,
         _last_included_term: u64,
-        _last_included_index: u64,
+        last_included_index: u64,
         _snapshot: &[u8],
     ) -> bool {
-        true
+        let inner = self.inner.lock().unwrap();
+        let last_included_index = last_included_index as usize;
+        inner.last_included_log.is_some() && last_included_index < inner.state.commit_index
     }
 
     fn election_timeout() -> Duration {
@@ -410,7 +491,7 @@ impl RaftHandle {
     }
 
     fn rpc_timeout() -> Duration {
-        Duration::from_millis(20)
+        Duration::from_millis(50)
     }
 }
 

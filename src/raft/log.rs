@@ -19,7 +19,7 @@ impl Default for LogEntry {
 
 impl Debug for LogEntry {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{{ term: {}, index: {} }}", self.term, self.index)
+        write!(f, "(term: {}, index: {})", self.term, self.index)
     }
 }
 
@@ -38,24 +38,25 @@ impl Logs {
         self.logs.push(log);
     }
 
+    pub fn discard(&mut self, new_offset: usize) {
+        self.logs.clear();
+        self.offset = new_offset;
+    }
+
     pub fn len(&self) -> usize {
         self.logs.len()
     }
 
-    pub fn head(&self) -> usize {
+    pub fn begin(&self) -> usize {
         self.offset
     }
 
-    pub fn tail(&self) -> usize {
+    pub fn end(&self) -> usize {
         self.offset + self.logs.len()
     }
 
     pub fn contains_index(&self, index: usize) -> bool {
         (self.offset..self.offset + self.len()).contains(&index)
-    }
-
-    pub fn first(&self) -> Option<&LogEntry> {
-        self.logs.first()
     }
 
     pub fn first_index(&self) -> Option<usize> {
