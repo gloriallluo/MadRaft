@@ -38,11 +38,6 @@ impl Logs {
         self.logs.push(log);
     }
 
-    pub fn discard(&mut self, new_offset: usize) {
-        self.logs.clear();
-        self.offset = new_offset;
-    }
-
     pub fn len(&self) -> usize {
         self.logs.len()
     }
@@ -71,11 +66,24 @@ impl Logs {
         Some(self.logs.last()?.index)
     }
 
+    /// trim logs until (include) `index`.
+    /// if `index` is not contained in logs, then discard all logs.
     pub fn trim(&mut self, index: usize) {
-        let new_offset = index + 1;
-        let index = index - self.offset;
-        self.logs.drain(..=index);
-        self.offset = new_offset;
+        if self.contains_index(index) {
+            let new_offset = index + 1;
+            let index = index - self.offset;
+            self.logs.drain(..=index);
+            self.offset = new_offset;
+        } else {
+            self.logs.clear();
+            self.offset = index + 1;
+        }
+    }
+
+    #[allow(unused)]
+    pub fn print_all(&self) {
+        debug!("{:?}", self);
+        debug!("{:?}", self.logs);
     }
 }
 

@@ -127,21 +127,20 @@ impl Raft {
         }
         // is leader
         let term = self.state.term;
-        let index = if let Some(e) = self.state.logs.last() {
-            e.index + 1
-        } else {
-            self.state.logs.begin() // empty log
-        };
-        // debug!("[{:?}] start: push (term {}, index {})", self, term, index);
+        let index = self.state.logs.end();
+        // info!("[{:?}] start: push (term {}, index {}), {:?}", self, term, index, self.state.logs);
         self.state.logs.push(LogEntry { term, index, data: data.into() });
         Ok(Start{ term, index })
     }
 
     pub(crate) fn apply(&mut self) {
+        // debug!("[{:?}] apply: apply_index {}, commit_index {}, {:?}", 
+            // self, self.state.applied_index, self.state.commit_index, self.state.logs);
+
         if self.state.commit_index < self.state.logs.begin() {
             return;
         }
-        if self.state.applied_index < self.state.logs.begin() {
+        if self.state.applied_index <= self.state.logs.begin() {
             let last_included_log = self.last_included_log.as_ref().unwrap();
             let msg = ApplyMsg::Snapshot {
                 data: self.snapshot.clone(),
@@ -152,8 +151,6 @@ impl Raft {
             self.apply_ch.unbounded_send(msg).unwrap();
         }
         while self.state.applied_index < self.state.commit_index {
-            // debug!("[{:?}] apply {}, commit {}, log {:?}",
-            //     self, self.state.applied_index, self.state.commit_index, self.state.logs);
             let index = self.state.applied_index;
             let log = self.state.logs[index].clone();
             let msg = ApplyMsg::Command {
@@ -218,7 +215,6 @@ impl Raft {
         // debug!("[{:?}] send_append_entry: follower {}'s next index is {}, leader log {:?}",
         //     self, id, self.state.next_index[id], self.state.logs);
         let args = {
-            // NOTE: `prev_log` is before the beginning of log entries sent to follower.
             let prev_log_index = max(self.state.next_index[id], 1) - 1;
             let prev_log_term = if self.state.logs.contains_index(prev_log_index) {
                 self.state.logs[prev_log_index].term
@@ -287,6 +283,7 @@ impl Raft {
         let new_next;
         let args = {
             let last_include_log = self.last_included_log.as_ref().unwrap();
+            info!("[{:?}] send_install_snapshot: last_included_log {:?}", self, self.last_included_log);
             new_next = last_include_log.index + 1;
             InstallSnapshotArgs {
                 term: self.state.term,
@@ -387,7 +384,7 @@ impl Raft {
     ///
     /// Return true if turns to follower.
     pub(crate) fn on_request_vote(&mut self, args: RequestVoteArgs) -> RequestVoteReply {
-        debug!("[{:?}] on_request_vote: {:?}", self, args);
+        // debug!("[{:?}] on_request_vote: {:?}", self, args);
         // 1. newer term
         let newer = args.term >= self.state.term;
         // If the candidate is in a newer term, turns to follower.
@@ -403,8 +400,8 @@ impl Raft {
 
         // 3. logs
         let (prev_term, prev_index) = self.last_log_info();
-        debug!("[{:?}] on_request_vote: my log term {}, my log index {}",
-            self, prev_term, prev_index);
+        // debug!("[{:?}] on_request_vote: my log term {}, my log index {}",
+            // self, prev_term, prev_index);
         let log_term_wins = args.last_log_term > prev_term;
         let log_index_wins = args.last_log_term == prev_term && args.last_log_index >= prev_index;
 
@@ -428,8 +425,8 @@ impl Raft {
             && (args.prev_log_index + 1 == self.state.logs.begin()
             || self.state.logs.contains_index(args.prev_log_index)
             && self.state.logs[args.prev_log_index].term == args.prev_log_term);
-        // debug!("[{:?}] on_append_entry: from {}: {:?}; success = {}, my log {:?}",
-        //     self, args.leader, args, success, self.state.logs);
+        // debug!("[{:?}] on_append_entry: from {}; success = {}, my log {:?}",
+            // self, args.leader, success, self.state.logs);
 
         if args.term > self.state.term {
             self.role = Role::Follower;
@@ -441,6 +438,7 @@ impl Raft {
             return AppendEntryReply { term: self.state.term, success };
         }
         // reset follower timer
+        self.role = Role::Follower;
         self.set_timer();
 
         let end = self.state.logs.end(); // new entry index
@@ -456,7 +454,7 @@ impl Raft {
         // update commit_index
         if args.leader_commit_index > self.state.commit_index {
             self.state.commit_index = min(args.leader_commit_index, end);
-            info!("[{:?}] on_append_entry: update commit {}", self, self.state.commit_index);
+            // debug!("[{:?}] on_append_entry: update commit {}", self, self.state.commit_index);
             self.apply();
         }
         AppendEntryReply { term: self.state.term, success }
@@ -478,8 +476,9 @@ impl Raft {
 
         // reset follower timer
         self.set_timer();
+        self.role = Role::Follower;
 
-        self.last_included_log = Some(LogEntry{
+        self.last_included_log = Some(LogEntry {
             term: args.last_included_term,
             index: args.last_included_index,
             data: vec![],
@@ -490,9 +489,9 @@ impl Raft {
             let mut data = args.data;
             self.snapshot.append(&mut data);
         }
-        self.state.logs.discard(args.last_included_index + 1);
+        self.state.logs.trim(args.last_included_index);
         self.state.commit_index = args.last_included_index + 1;
-        info!("[{:?}] on_install_snapshot: update commit {}", self, self.state.commit_index);
+        // info!("[{:?}] on_install_snapshot: update commit {}", self, self.state.commit_index);
 
         self.apply();
         reply

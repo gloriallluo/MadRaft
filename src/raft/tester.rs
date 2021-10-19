@@ -164,6 +164,7 @@ impl RaftTester {
 
     pub async fn start(&self, i: usize, cmd: Entry) -> Result<Start> {
         let raft = self.rafts.lock().unwrap()[i].as_ref().unwrap().clone();
+        // info!("start at {}: {:?}", i, cmd);
         self.handle
             .local_handle(self.addrs[i])
             .spawn(async move { raft.start(&bincode::serialize(&cmd).unwrap()).await })
@@ -214,7 +215,7 @@ impl RaftTester {
     /// if retry==false, calls start() only once, in order
     /// to simplify the early Lab 2B tests.
     pub async fn one(&self, cmd: Entry, expected_servers: usize, retry: bool) -> u64 {
-        debug!("one({:?}, {})", cmd, expected_servers);
+        info!("one({:?}, {})", cmd, expected_servers);
         let t0 = Instant::now();
         let mut starts = 0;
         while t0.elapsed() < Duration::from_secs(10) {
@@ -315,6 +316,7 @@ impl RaftTester {
                     }
                     ApplyMsg::Snapshot { data, index, term } if snapshot => {
                         if raft.cond_install_snapshot(term, index as u64, &data).await {
+                            debug!("server {} snapshot (term {}, index {})", i, term, index);
                             storage.snapshot(i, index as u64);
                         }
                     }
@@ -391,11 +393,10 @@ impl StorageHandle {
         }
         let log = &mut logs[i];
         if index as usize > log.len() {
-            panic!("server {} apply out of order {}", i, index);
+            panic!("server {} apply out of order {} (log length {})", 
+                i, index, log.len());
         } else if index as usize == log.len() {
             log.push(Some(entry));
-        } else {
-            debug!("index {} and log length {} does not match!", index, log.len());
         }
     }
 

@@ -1,16 +1,5 @@
-use std::{
-    io, fmt,
-    sync::{Arc, Mutex},
-    net::SocketAddr,
-};
-use futures::{
-    channel::mpsc,
-    stream::FuturesUnordered,
-    StreamExt,
-    FutureExt,
-    select_biased,
-    pin_mut,
-};
+use std::{fmt, io, net::SocketAddr, sync::{Arc, Mutex}};
+use futures::{FutureExt, StreamExt, channel::mpsc, pin_mut, select_biased, stream::FuturesUnordered};
 use crate::raft::{raft::*, args::*, log::*};
 use madsim::{time::*, fs, net, task, rand::{self, Rng}};
 use serde::{Deserialize, Serialize};
@@ -20,17 +9,15 @@ use serde::{Deserialize, Serialize};
 /// State data needs to be persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Persist {
+    /// Raft state:
     term: u64,
     voted_for: Option<usize>,
     logs: Vec<LogEntry>,
+    
+    /// Snapshot relevant:
+    snapshot: Vec<u8>,
+    last_included_log: Option<LogEntry>,
 }
-
-/// Snapshot
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Snapshot {
-    data: Vec<u8>,
-}
-
 
 /// # Results
 
@@ -64,7 +51,7 @@ impl RaftHandle {
         let handle = RaftHandle {
             me,
             peers,
-            inner
+            inner,
         };
         // initialize from state persisted before a crash
         handle.restore().await.expect("Failed to restore");
@@ -121,14 +108,12 @@ impl RaftHandle {
                 heartbeat_tasks.push(self.heartbeat(i));
             });
         let apply_task = self.apply().fuse();
-        let persist_task = self.leader_persist().fuse();
-        pin_mut!(apply_task, persist_task);
+        pin_mut!(apply_task);
         loop {
             select_biased! {
-                () = heartbeat_tasks.select_next_some() => return,
-                () = apply_task => {},
-                () = persist_task => {},
-                complete => {},
+                _ = heartbeat_tasks.select_next_some() => return,
+                _ = apply_task => {},
+                complete => unreachable!(),
             }
         }
     }
@@ -150,36 +135,43 @@ impl RaftHandle {
                             append_entry = false;
                             continue;
                         }
-                        // debug!("[{}] heartbeat: append entry to {}, logs from {}, leader log {:?}",
-                        //     self.me, id, inner.state.next_index[id], inner.state.logs);
+                        debug!("[{:?}] heartbeat: append entry to {}, logs from {}, leader log {:?}", 
+                            inner, id, inner.state.next_index[id], inner.state.logs);
                         inner.send_append_entry(id, self.peers[id])
                     };
 
                     let timeout = sleep(Self::rpc_timeout()).fuse();
                     let rpc = rpc.fuse();
-                    pin_mut!(rpc, timeout);
-                    select_biased! {
-                        _ = timeout => continue,
-                        reply = rpc => {
-                            match reply {
-                                Ok(reply) => {
-                                    let mut inner = self.inner.lock().unwrap();
-                                    match inner.handle_append_entry(id, reply, new_next, step) {
-                                        // AppendEntry accepted.
-                                        0 => break,
-                                        // retry due to log mismatch.
-                                        1 => { step <<= 1; continue; },
-                                        // follower lag too much, send snapshot.
-                                        2 => { append_entry = false; continue; },
-                                        // turn follower
-                                        -1 => return,
-                                        _ => {},
-                                    }
-                                },
-                                Err(_) => continue,
-                            }
-                        },
-                    }
+                    let persist = self.persist().fuse();
+                    pin_mut!(rpc, timeout, persist);
+                    let mut complete = false;
+                    loop {
+                        select_biased! {
+                            _ = timeout => break,
+                            _ = persist => continue,
+                            reply = rpc => {
+                                match reply {
+                                    Ok(reply) => {
+                                        let mut inner = self.inner.lock().unwrap();
+                                        // debug!("[{:?}] heartbeat: receive reply from {}", inner, id);
+                                        match inner.handle_append_entry(id, reply, new_next, step) {
+                                            // AppendEntry accepted.
+                                            0 => { complete = true; break; },
+                                            // retry due to log mismatch.
+                                            1 => { step <<= 1; break; },
+                                            // follower lag too much, send snapshot.
+                                            2 => { append_entry = false; break; },
+                                            // turn follower
+                                            -1 => return,
+                                            _ => {},
+                                        }
+                                    },
+                                    Err(_) => break,
+                                }
+                            },
+                        }
+                    } // loop select
+                    if complete { break; }
                 } else {
                     // Send snapshot to follower.
                     let (rpc, done, new_next) = {
@@ -190,37 +182,44 @@ impl RaftHandle {
 
                     let timeout = sleep(Self::rpc_timeout()).fuse();
                     let rpc = rpc.fuse();
-                    pin_mut!(rpc, timeout);
-                    select_biased! {
-                        _ = timeout => continue,
-                        reply = rpc => {
-                            match reply {
-                                Ok(reply) => {
-                                    let mut inner = self.inner.lock().unwrap();
-                                    match inner.handle_install_snapshot(reply, id, new_next) {
-                                        // InstallSnapshot accepted.
-                                        0 => {
-                                            if done {
-                                                break;
-                                            } else {
-                                                offset += SNAPSHOT_SIZE;
-                                                continue;
-                                            }
-                                        },
-                                        // turn follower
-                                        -1 => return,
-                                        _ => {},
-                                    }
-                                },
-                                Err(_) => continue,
-                            }
-                        },
-                    }
+                    let persist = self.persist().fuse();
+                    pin_mut!(rpc, timeout, persist);
+                    let mut complete = false;
+                    loop {
+                        select_biased! {
+                            _ = timeout => break,
+                            _ = persist => continue,
+                            reply = rpc => {
+                                match reply {
+                                    Ok(reply) => {
+                                        let mut inner = self.inner.lock().unwrap();
+                                        match inner.handle_install_snapshot(reply, id, new_next) {
+                                            // InstallSnapshot accepted.
+                                            0 => {
+                                                if done {
+                                                    complete = true;
+                                                    break;
+                                                } else {
+                                                    offset += SNAPSHOT_SIZE;
+                                                    break;
+                                                }
+                                            },
+                                            // turn follower
+                                            -1 => return,
+                                            _ => {},
+                                        }
+                                    },
+                                    Err(_) => break,
+                                }
+                            },
+                        }
+                    } // loop select
+                    if complete { break; }
                 }
             } // loop retry
             // Heartbeat interval
             sleep(Self::heartbeat_timeout()).await;
-        }
+        } // loop heartbeat
     }
 
     async fn apply(&self) {
@@ -234,14 +233,6 @@ impl RaftHandle {
         }
     }
 
-    async fn leader_persist(&self) {
-        loop {
-            // persist every 80 milliseconds
-            sleep(Duration::from_millis(80)).await;
-            self.persist().await;
-        }
-    }
-
     /// ## Candidate functions
 
     async fn run_candidate(&self) {
@@ -249,8 +240,8 @@ impl RaftHandle {
         let timer = self.candidate_timer().fuse();
         pin_mut!(vote_request, timer);
         select_biased! {
-            () = vote_request => return,
-            () = timer => return,
+            _ = vote_request => return,
+            _ = timer => return,
         }
     }
 
@@ -281,7 +272,7 @@ impl RaftHandle {
                     let mut inner = self.inner.lock().unwrap();
                     if inner.handle_request_vote(reply) { return; }
                     if count >= majority && inner.role == Role::Candidate {
-                        info!("[{}] Wins election, turns to leader.", self.me);
+                        info!("[{:?}] Wins election, turns to leader.", inner);
                         inner.role = Role::Leader;
                         return;
                     }
@@ -306,7 +297,7 @@ impl RaftHandle {
         let timer = self.follower_timer().fuse();
         pin_mut!(timer);
         select_biased! {
-            () = timer => return,
+            _ = timer => return,
         }
     }
 
@@ -321,7 +312,7 @@ impl RaftHandle {
             let inner = self.inner.lock().unwrap();
             if inner.get_timer() >= timeout {
                 info!("[{:?}] Election timeout, turns to Candidate. term = {}, log = {:?}",
-                      inner, inner.state.term, inner.state.logs);
+                    inner, inner.state.term, inner.state.logs);
                 let mut inner = inner;
                 inner.role = Role::Candidate;
                 return;
@@ -352,7 +343,8 @@ impl RaftHandle {
             inner.snapshot = snapshot.into();
             inner.last_included_log = Some(inner.state.logs[index].to_owned());
             inner.state.logs.trim(index);
-            debug!("[{:?}] logs after trim: {:?}", inner, inner.state.logs);
+            debug!("[{:?}] logs after trim: {:?}, last_included_log {:?}", 
+                inner, inner.state.logs, inner.last_included_log);
         }
         self.persist().await?;
         Ok(())
@@ -363,52 +355,50 @@ impl RaftHandle {
     ///
     /// See paper's Figure 2 for a description of what should be persistent.
     async fn persist(&self) -> io::Result<()> {
-        let (state, snapshot) = {
+        let persist = {
             let inner = self.inner.lock().unwrap();
-            // debug!("[{:?}] logs {:?} persisted", self, inner.state.logs);
+            // debug!("[{:?}] {:?} persisted", inner, inner.state.logs);
             let persist: Persist = Persist {
                 term: inner.state.term,
                 voted_for: inner.state.voted_for,
                 logs: inner.state.logs.clone().into(),
+                snapshot: inner.snapshot.clone(),
+                last_included_log: inner.last_included_log.clone(),
             };
-            let state = bincode::serialize(&persist).unwrap();
-            let snapshot: Vec<u8> = inner.snapshot.clone();
-            (state, snapshot)
+            bincode::serialize(&persist).unwrap()
         };
 
+        let file = fs::File::create("state1").await?;
+        file.write_all_at(&persist, 0).await?;
+        file.sync_all().await?;
         let file = fs::File::create("state").await?;
-        file.write_all_at(&state, 0).await?;
+        file.write_all_at(&persist, 0).await?;
         file.sync_all().await?;
 
-        let file = fs::File::create("snapshot").await?;
-        file.write_all_at(&snapshot, 0).await?;
-        file.sync_all().await?;
         Ok(())
     }
 
     /// Restore previously persisted state.
     async fn restore(&self) -> io::Result<()> {
-        match fs::read("snapshot").await {
-            Ok(snapshot) => if snapshot.len() > 0 {
-                // FIXME: broken snapshot
-                let snapshot: Snapshot = bincode::deserialize(&snapshot).unwrap();
-                let mut inner = self.inner.lock().unwrap();
-                inner.snapshot = snapshot.data;
+        let paths = ["state", "state1"];
+        for path in paths {
+            match fs::read(path).await {
+                Ok(persist) => {
+                    let persist = bincode::deserialize(&persist);
+                    if persist.is_err() { continue; }
+                    let persist: Persist = persist.unwrap();
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.state.term = persist.term;
+                    inner.state.voted_for = persist.voted_for;
+                    inner.state.logs = Logs::from(persist.logs);
+                    inner.snapshot = persist.snapshot;
+                    inner.last_included_log = persist.last_included_log;
+                    debug!("[{:?}] {:?} restored", self, inner.state.logs);
+                    return Ok(());
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+                Err(e) => return Err(e),
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        match fs::read("state").await {
-            Ok(state) => {
-                let persist: Persist = bincode::deserialize(&state).unwrap();
-                let mut inner = self.inner.lock().unwrap();
-                inner.state.term = persist.term;
-                inner.state.voted_for = persist.voted_for;
-                inner.state.logs = Logs::from(persist.logs);
-                debug!("[{:?}] logs {:?} restored", self, inner.state.logs);
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
         }
         Ok(())
     }
@@ -491,7 +481,8 @@ impl RaftHandle {
     }
 
     fn rpc_timeout() -> Duration {
-        Duration::from_millis(50)
+        // Duration::from_millis(rand::rng().gen_range(20..50))
+        Duration::from_millis(40)
     }
 }
 
