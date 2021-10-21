@@ -54,29 +54,34 @@ impl Logs {
         (self.offset..self.offset + self.len()).contains(&index)
     }
 
-    pub fn first_index(&self) -> Option<usize> {
-        Some(self.logs.first()?.index)
-    }
-
     pub fn last(&self) -> Option<&LogEntry> {
         self.logs.last()
     }
 
-    pub fn last_index(&self) -> Option<usize> {
-        Some(self.logs.last()?.index)
+    pub fn append(&mut self, other: &mut Vec<LogEntry>) {
+        self.logs.append(other);
     }
 
-    /// trim logs until (include) `index`.
-    /// if `index` is not contained in logs, then discard all logs.
-    pub fn trim(&mut self, index: usize) {
+    /// trim logs from `index`.
+    pub fn trim_from(&mut self, index: usize) {
         if self.contains_index(index) {
-            let new_offset = index + 1;
             let index = index - self.offset;
-            self.logs.drain(..=index);
+            self.logs.drain(index..);
+        }
+    }
+
+    /// trim logs to `index`.
+    /// if `index` is not contained in logs, then discard all logs.
+    pub fn trim_to(&mut self, index: usize) {
+        if index == 0 { return; }
+        if self.contains_index(index - 1) {
+            let new_offset = index;
+            let index = index - self.offset;
+            self.logs.drain(..index);
             self.offset = new_offset;
         } else {
             self.logs.clear();
-            self.offset = index + 1;
+            self.offset = index;
         }
     }
 

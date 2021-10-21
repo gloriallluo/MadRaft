@@ -604,7 +604,7 @@ async fn persist3_2c() {
 /// iteration asks a leader, if there is one, to insert a command in the Raft
 /// log.  If there is a leader, that leader will fail quickly with a high
 /// probability (perhaps without committing the command), or crash after a while
-/// with low probability (most likey committing the command).  If the number of
+/// with low probability (most likely committing the command).  If the number of
 /// alive servers isn't enough to form a majority, perhaps start a new server.
 /// The leader in a new term may try to finish replicating log entries that
 /// haven't been committed yet.
@@ -695,8 +695,7 @@ async fn figure_8_unreliable_2c() {
     t.one(random.gen_entry(), 1, true).await;
 
     let mut nup = servers;
-    // TODO: 1000 iterations
-    for _iters in 0..500 {
+    for _iters in 0..1000 {
         let mut leader = None;
         for i in 0..servers {
             if t.start(i, random.gen_entry()).await.is_ok() && t.is_connected(i) {
