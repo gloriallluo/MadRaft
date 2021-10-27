@@ -1,6 +1,11 @@
-use super::msg::*;
-use madsim::{net, time::*};
+use std::marker::PhantomData;
+use crate::kvraft::msg::*;
+use madsim::{net, time::*, rand::{self, Rng}};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+
+const CLIENT_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub struct Clerk {
     core: ClerkCore<Op, String>,
@@ -30,6 +35,7 @@ impl Clerk {
 }
 
 pub struct ClerkCore<Req, Rsp> {
+    leader: AtomicUsize,
     servers: Vec<SocketAddr>,
     _mark: std::marker::PhantomData<(Req, Rsp)>,
 }
@@ -41,23 +47,50 @@ where
 {
     pub fn new(servers: Vec<SocketAddr>) -> Self {
         ClerkCore {
+            leader: AtomicUsize::new(0),
             servers,
-            _mark: std::marker::PhantomData,
+            _mark: PhantomData,
         }
     }
 
     pub async fn call(&self, args: Req) -> Rsp {
         let net = net::NetLocalHandle::current();
-        for i in 0..self.servers.len() {
+        let seq = rand::rng().gen::<usize>();
+        let mut cur = self.leader.load(Ordering::SeqCst);
+        let args = Msg { seq, data: args };
+        loop {
+            debug!("Client issues request {:?} -> cur {}", args, cur);
             let ret = net
-                .call_timeout::<Req, Result<Rsp, Error>>(
-                    self.servers[i],
+                .call_timeout::<Msg<Req>, Result<Rsp, Error>>(
+                    self.servers[cur],
                     args.clone(),
-                    Duration::from_millis(500),
-                )
-                .await;
-            todo!("handle RPC results")
+                    CLIENT_TIMEOUT,
+                ).await;
+            match ret {
+                // Success
+                Ok(Ok(res)) => {
+                    self.leader.store(cur, Ordering::SeqCst);
+                    return res;
+                },
+                Ok(Err(e)) => {
+                    debug!("Client gets unexpected response {:?} for {}", e, seq);
+                    cur = match e {
+                        // The server is not Leader.
+                        Error::NotLeader { hint } => hint,
+                        // Failed to reach consensus,
+                        // i.e. the log entry has been over-written.
+                        Error::Failed => (cur + 1) % self.servers.len(),
+                        // Server timeout, added to log but not committed yet.
+                        // CAUTION: Leader of a minority partition.
+                        Error::Timeout => (cur + 1) % self.servers.len(),
+                    }
+                },
+                // Client timeout, due to server crash or packet loss.
+                Err(_) => {
+                    debug!("Client Timeout for {}", seq);
+                    cur = (cur + 1) % self.servers.len();
+                }
+            }
         }
-        todo!("handle RPC results")
     }
 }

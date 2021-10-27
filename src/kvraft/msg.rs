@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Msg<T> {
+    pub(crate) seq: usize,
+    pub(crate) data: T,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
     Get { key: String },
@@ -11,8 +18,9 @@ pub enum Op {
 pub enum Error {
     #[error("not leader, hint: {hint}")]
     NotLeader { hint: usize },
-    #[error("timeout")]
+    #[error("server timeout")]
     Timeout,
     #[error("failed to reach consensus")]
     Failed,
 }
+

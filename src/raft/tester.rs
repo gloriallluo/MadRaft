@@ -164,7 +164,6 @@ impl RaftTester {
 
     pub async fn start(&self, i: usize, cmd: Entry) -> Result<Start> {
         let raft = self.rafts.lock().unwrap()[i].as_ref().unwrap().clone();
-        // info!("start at {}: {:?}", i, cmd);
         self.handle
             .local_handle(self.addrs[i])
             .spawn(async move { raft.start(&bincode::serialize(&cmd).unwrap()).await })
@@ -231,7 +230,7 @@ impl RaftTester {
                         index = Some(start.index);
                         break;
                     }
-                    Err(e) =>  {},
+                    Err(_) =>  {},
                 }
             }
 
@@ -241,7 +240,6 @@ impl RaftTester {
                 let t1 = Instant::now();
                 while t1.elapsed() < Duration::from_secs(2) {
                     let (nd, cmd1) = self.n_committed(index as u64);
-                    // debug!("nd = {}, cmd1 = {:?}", nd, cmd1);
                     if nd > 0 && nd >= expected_servers {
                         // committed
                         if let Some(cmd2) = cmd1 {
@@ -305,10 +303,9 @@ impl RaftTester {
         let task = handle.spawn(async move {
             while let Some(cmd) = apply_recver.next().await {
                 match cmd {
-                    ApplyMsg::Command { data, index } => {
+                    ApplyMsg::Command { data, index, .. } => {
                         let entry = bincode::deserialize(&data)
                             .expect("committed command is not an entry");
-                        debug!("server {} apply {}: {:?}", i, index, entry);
                         storage.push_and_check(i, index as u64, entry);
                         if snapshot && (index + 1) % SNAPSHOT_INTERVAL == 0 {
                             raft.snapshot(index, &data).await.unwrap();

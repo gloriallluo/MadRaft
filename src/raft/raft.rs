@@ -19,9 +19,11 @@ pub type MsgRecver = mpsc::UnboundedReceiver<ApplyMsg>;
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
+#[derive(Debug)]
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
+        term: u64,
         index: usize,
     },
     // For 2D:
@@ -113,7 +115,11 @@ pub struct Raft {
     pub(crate) apply_ch: MsgSender,
     pub(crate) state: State,
     pub(crate) timer: Instant,
+
+    /// rpc redirect
+    pub(crate) leader: Option<usize>,
     pub(crate) common_sz: usize,
+
     /// Snapshot related data.
     /// Only leader maintains them to send snapshot to followers.
     pub(crate) last_included_log: Option<LogEntry>,
@@ -123,20 +129,22 @@ pub struct Raft {
 impl Raft {
     pub(crate) fn start(&mut self, data: &[u8]) -> Result<Start> {
         if self.role != Role::Leader {
-            let leader = (self.me + 1) % self.common_sz;
+            let leader = self.leader
+                .unwrap_or((self.me + 1) % self.common_sz);
             return Err(Error::NotLeader(leader));
         }
         // is leader
         let term = self.state.term;
         let index = self.state.logs.end();
         self.state.logs.push(LogEntry { term, index, data: data.into() });
-        Ok(Start{ term, index })
+        Ok(Start { term, index })
     }
 
     pub(crate) fn apply(&mut self) {
         if self.state.commit_index < self.state.logs.begin() {
             return;
         }
+        
         if self.state.applied_index <= self.state.logs.begin() {
             let last_included_log = self.last_included_log.as_ref().unwrap();
             let msg = ApplyMsg::Snapshot {
@@ -147,11 +155,13 @@ impl Raft {
             self.state.applied_index = self.state.logs.begin();
             self.apply_ch.unbounded_send(msg).unwrap();
         }
+
         while self.state.applied_index < self.state.commit_index {
             let index = self.state.applied_index;
             let log = self.state.logs[index].clone();
             let msg = ApplyMsg::Command {
                 data: log.data,
+                term: log.term,
                 index: log.index,
             };
             self.state.applied_index += 1;
@@ -239,7 +249,8 @@ impl Raft {
     /// - 1: retry AppendEntry.
     /// - 2: retry InstallSnapshot.
     pub(crate) fn handle_append_entry(
-        &mut self, id: usize,
+        &mut self,
+        id: usize,
         reply: AppendEntryReply,
         new_next: usize,
         step: usize,
@@ -353,7 +364,6 @@ impl Raft {
     /// Else stays candidate.
     pub(crate) fn handle_request_vote(&mut self, reply: RequestVoteReply) -> bool {
         if reply.term > self.state.term {
-            info!("[{:?}] Receives reply from newer term, turns to follower.", self);
             self.role = Role::Follower;
             self.state.term = reply.term;
             self.state.voted_for = None;
@@ -388,8 +398,8 @@ impl Raft {
 
         // If the candidate is in a newer term, turns to follower.
         if args.term > self.state.term {
-            info!("[{:?}] Receive RequestVote from newer term, turn to follower.", self);
             self.role = Role::Follower;
+            self.leader = None;
             self.state.term = args.term;
             self.state.voted_for = None;
         }
@@ -411,7 +421,7 @@ impl Raft {
             self.role = Role::Follower;
         }
         // info!("[{:?}] on_request_vote: candidate={} (term={}), vote_granted={}; \n\t\t\t       not_voted {} ({:?}), log_term_wins {}, log_index_wins {}",
-            // self, args.candidate, args.term, vote_granted, not_voted, self.state.voted_for, log_term_wins, log_index_wins);
+        //     self, args.candidate, args.term, vote_granted, not_voted, self.state.voted_for, log_term_wins, log_index_wins);
         RequestVoteReply { term: self.state.term, vote_granted }
     }
 
@@ -428,19 +438,18 @@ impl Raft {
             && self.state.logs[args.prev_log_index].term == args.prev_log_term;
 
         if args.term > self.state.term {
-            self.role = Role::Follower;
             self.state.term = args.term;
             self.state.voted_for = None;
         }
 
         // reset follower timer
         self.set_timer();
+        self.role = Role::Follower;
+        self.leader = Some(args.leader);
 
         if !success {
             return AppendEntryReply { term: self.state.term, success };
         }
-
-        self.role = Role::Follower;
 
         self.state.logs.trim_from(args.prev_log_index + 1);
         self.state.logs.append(&mut args.log_entries);
@@ -463,7 +472,6 @@ impl Raft {
         if self.state.term > args.term { return reply; }
 
         if args.term > self.state.term {
-            self.role = Role::Follower;
             self.state.term = args.term;
             self.state.voted_for = None;
         }
@@ -471,12 +479,14 @@ impl Raft {
         // reset follower timer
         self.set_timer();
         self.role = Role::Follower;
+        self.leader = Some(args.leader);
 
         self.last_included_log = Some(LogEntry {
             term: args.last_included_term,
             index: args.last_included_index,
             data: vec![],
         });
+
         if args.offset == 0 {
             self.snapshot = args.data;
         } else {

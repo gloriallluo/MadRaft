@@ -107,7 +107,6 @@ async fn generic_test(
             let ck = t.make_client(&t.all());
             let done = done.clone();
             cas.push(task::spawn_local(async move {
-                // TODO: change the closure to a future.
                 let mut j = 0;
                 let mut rng = rand::rng();
                 let mut last = String::new();
@@ -116,13 +115,12 @@ async fn generic_test(
                 while !done.load(Ordering::Relaxed) {
                     if rng.gen_bool(0.5) {
                         let nv = format!("x {} {} y", cli, j);
-                        debug!("{}: client new append {:?}", cli, nv);
                         // predict effect of append(k, val) if old value is prev.
                         last += &nv;
                         ck.append(&key, &nv).await;
                         j += 1;
                     } else {
-                        debug!("{}: client new get {:?}", cli, key);
+                        // debug!("{}: client new get {:?}", cli, key);
                         let v = ck.get(&key).await;
                         assert_eq!(v, last, "get wrong value, key {:?}", key);
                     }
@@ -190,7 +188,6 @@ async fn generic_test(
 
         debug!("wait for clients");
         for (i, task) in cas.into_iter().enumerate() {
-            debug!("read from clients {}", i);
             let j = task.await;
             if j < 10 {
                 warn!(
@@ -211,7 +208,7 @@ async fn generic_test(
                 t.log_size() <= 2 * maxraftstate,
                 "logs were not trimmed ({} > 2*{})",
                 t.log_size(),
-                maxraftstate
+                maxraftstate,
             )
         }
     }

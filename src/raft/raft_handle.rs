@@ -44,6 +44,7 @@ impl RaftHandle {
             apply_ch,
             state: State::new(size),
             timer: Instant::now(),
+            leader: None,
             common_sz: peers.len(),
             last_included_log: None,
             snapshot: Vec::new(),
@@ -279,7 +280,6 @@ impl RaftHandle {
         }
         // lose election
         let mut inner = self.inner.lock().unwrap();
-        info!("[{:?}] Loses election, turns to follower.", inner);
         inner.role = Role::Follower;
         inner.state.voted_for = None;
     }
@@ -308,7 +308,6 @@ impl RaftHandle {
             sleep_until(deadline).await;
             let inner = self.inner.lock().unwrap();
             if inner.get_timer() >= timeout {
-                info!("[{:?}] Election timeout, turns to Candidate.", inner);
                 let mut inner = inner;
                 inner.role = Role::Candidate;
                 return;
@@ -325,6 +324,11 @@ impl RaftHandle {
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
         self.get_role() == Role::Leader
+    }
+
+    pub fn leader(&self) -> usize {
+        self.inner.lock().unwrap().leader
+            .unwrap_or((self.me + 1) % self.peers.len())
     }
 
     /// The service says it has created a snapshot that has all info up to and
@@ -349,7 +353,6 @@ impl RaftHandle {
     async fn persist(&self) -> io::Result<()> {
         let persist = {
             let inner = self.inner.lock().unwrap();
-            // debug!("[{:?}] {:?} persisted", inner, inner.state.logs);
             let persist: Persist = Persist {
                 term: inner.state.term,
                 voted_for: inner.state.voted_for,
@@ -421,8 +424,6 @@ impl RaftHandle {
             let mut this = self.inner.lock().unwrap();
             this.on_request_vote(args)
         };
-        // if you need to persist or call async functions here,
-        // make sure the lock is scoped and dropped.
         let this = self.clone();
         task::spawn(async move { this.persist().await }).detach();
         Ok(reply)

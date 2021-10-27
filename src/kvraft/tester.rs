@@ -25,6 +25,7 @@ pub struct Tester {
 
 impl Tester {
     pub async fn new(n: usize, unreliable: bool, maxraftstate: Option<usize>) -> Tester {
+        debug!("new");
         let handle = Handle::current();
         if unreliable {
             handle.net.update_config(|cfg| {
