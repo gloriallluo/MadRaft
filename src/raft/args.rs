@@ -44,8 +44,8 @@ pub struct InstallSnapshotArgs {
     pub(crate) last_included_term: u64,
     pub(crate) last_included_index: usize,
     pub(crate) offset: usize,
-    pub(crate) data: Vec<u8>,
     pub(crate) done: bool,
+    pub(crate) data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

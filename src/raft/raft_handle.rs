@@ -12,7 +12,7 @@ struct Persist {
     /// Raft state:
     term: u64,
     voted_for: Option<usize>,
-    logs: Vec<LogEntry>,
+    logs: Logs,
     
     /// Snapshot:
     snapshot: Vec<u8>,
@@ -48,6 +48,8 @@ impl RaftHandle {
             common_sz: peers.len(),
             last_included_log: None,
             snapshot: Vec::new(),
+            snapshot_done: true,
+            log_size: 0,
         }));
         let handle = RaftHandle {
             me,
@@ -76,7 +78,7 @@ impl RaftHandle {
 
     async fn run(&self) {
         loop {
-            match self.get_role() {
+            match self.role() {
                 Role::Leader => {
                     self.inner.lock().unwrap().reset_state(Role::Leader);
                     self.run_leader().await;
@@ -93,7 +95,7 @@ impl RaftHandle {
         }
     }
 
-    fn get_role(&self) -> Role {
+    fn role(&self) -> Role {
         self.inner.lock().unwrap().role
     }
 
@@ -253,7 +255,7 @@ impl RaftHandle {
             inner.send_request_vote(&peer_without_me)
         };
 
-        if self.get_role() != Role::Candidate { return; }
+        if self.role() != Role::Candidate { return; }
 
         // collect votes
         let majority = (self.peers.len() + 1) >> 1;
@@ -323,12 +325,19 @@ impl RaftHandle {
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        self.get_role() == Role::Leader
+        self.role() == Role::Leader
     }
 
     pub fn leader(&self) -> usize {
-        self.inner.lock().unwrap().leader
+        self.inner
+            .lock()
+            .unwrap()
+            .leader
             .unwrap_or((self.me + 1) % self.peers.len())
+    }
+
+    pub fn log_size(&self) -> usize {
+        self.inner.lock().unwrap().log_size
     }
 
     /// The service says it has created a snapshot that has all info up to and
@@ -352,15 +361,17 @@ impl RaftHandle {
     /// See paper's Figure 2 for a description of what should be persistent.
     async fn persist(&self) -> io::Result<()> {
         let persist = {
-            let inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
             let persist: Persist = Persist {
                 term: inner.state.term,
                 voted_for: inner.state.voted_for,
-                logs: inner.state.logs.clone().into(),
+                logs: inner.state.logs.clone(),
                 snapshot: inner.snapshot.clone(),
                 last_included_log: inner.last_included_log.clone(),
             };
-            bincode::serialize(&persist).unwrap()
+            let persist = bincode::serialize(&persist).unwrap();
+            inner.log_size = persist.len();
+            persist
         };
 
         let paths = ["state1", "state"];
@@ -385,7 +396,7 @@ impl RaftHandle {
                     let mut inner = self.inner.lock().unwrap();
                     inner.state.term = persist.term;
                     inner.state.voted_for = persist.voted_for;
-                    inner.state.logs = Logs::from(persist.logs);
+                    inner.state.logs = persist.logs;
                     inner.snapshot = persist.snapshot;
                     inner.last_included_log = persist.last_included_log;
                     return Ok(());
@@ -460,7 +471,7 @@ impl RaftHandle {
     ) -> bool {
         let inner = self.inner.lock().unwrap();
         let last_included_index = last_included_index as usize;
-        inner.last_included_log.is_some() && last_included_index < inner.state.commit_index
+        inner.last_included_log.is_some() && last_included_index < inner.state.commit_index && inner.snapshot_done
     }
 
     fn election_timeout() -> Duration {

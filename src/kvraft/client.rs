@@ -35,6 +35,7 @@ impl Clerk {
 }
 
 pub struct ClerkCore<Req, Rsp> {
+    me: usize,
     leader: AtomicUsize,
     servers: Vec<SocketAddr>,
     _mark: std::marker::PhantomData<(Req, Rsp)>,
@@ -47,6 +48,7 @@ where
 {
     pub fn new(servers: Vec<SocketAddr>) -> Self {
         ClerkCore {
+            me: rand::rng().gen::<usize>(),
             leader: AtomicUsize::new(0),
             servers,
             _mark: PhantomData,
@@ -57,9 +59,8 @@ where
         let net = net::NetLocalHandle::current();
         let seq = rand::rng().gen::<usize>();
         let mut cur = self.leader.load(Ordering::SeqCst);
-        let args = Msg { seq, data: args };
+        let args = Msg { client: self.me, seq, data: args };
         loop {
-            debug!("Client issues request {:?} -> cur {}", args, cur);
             let ret = net
                 .call_timeout::<Msg<Req>, Result<Rsp, Error>>(
                     self.servers[cur],
@@ -73,7 +74,6 @@ where
                     return res;
                 },
                 Ok(Err(e)) => {
-                    debug!("Client gets unexpected response {:?} for {}", e, seq);
                     cur = match e {
                         // The server is not Leader.
                         Error::NotLeader { hint } => hint,
@@ -87,7 +87,6 @@ where
                 },
                 // Client timeout, due to server crash or packet loss.
                 Err(_) => {
-                    debug!("Client Timeout for {}", seq);
                     cur = (cur + 1) % self.servers.len();
                 }
             }

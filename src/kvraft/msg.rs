@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Msg<T> {
+    pub(crate) client: usize,
     pub(crate) seq: usize,
     pub(crate) data: T,
 }

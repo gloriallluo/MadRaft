@@ -23,7 +23,6 @@ pub type MsgRecver = mpsc::UnboundedReceiver<ApplyMsg>;
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
-        term: u64,
         index: usize,
     },
     // For 2D:
@@ -35,7 +34,7 @@ pub enum ApplyMsg {
 }
 
 
-pub const SNAPSHOT_SIZE: usize = 256; // 256 bytes
+pub const SNAPSHOT_SIZE: usize = 0x8000; // FIXME: GG
 const RPC_TIMEOUT: Duration = Duration::from_millis(40);
 
 /// # Start
@@ -86,7 +85,6 @@ impl State {
             next_index: vec![1; size],
             match_index: vec![0; size],
         }
-
     }
 }
 
@@ -124,6 +122,10 @@ pub struct Raft {
     /// Only leader maintains them to send snapshot to followers.
     pub(crate) last_included_log: Option<LogEntry>,
     pub(crate) snapshot: Vec<u8>,
+    /// Follower maintains: receiving snapshot or not
+    pub(crate) snapshot_done: bool,
+
+    pub(crate) log_size: usize,
 }
 
 impl Raft {
@@ -161,7 +163,6 @@ impl Raft {
             let log = self.state.logs[index].clone();
             let msg = ApplyMsg::Command {
                 data: log.data,
-                term: log.term,
                 index: log.index,
             };
             self.state.applied_index += 1;
@@ -186,6 +187,7 @@ impl Raft {
         self.timer = Instant::now();
         match role {
             Role::Leader => {
+                self.snapshot_done = true;
                 self.state.next_index.fill(self.state.logs.end());
                 self.state.match_index.fill(self.state.logs.begin());
             },
@@ -193,7 +195,9 @@ impl Raft {
                 self.state.term += 1;
                 self.state.voted_for = Some(self.me);
             },
-            Role::Follower => {},
+            Role::Follower => {
+                self.snapshot_done = true;
+            },
         }
     }
 
@@ -222,6 +226,7 @@ impl Raft {
             } else {
                 self.state.term
             };
+
             AppendEntryArgs {
                 term: self.state.term,
                 leader: self.me,
@@ -297,8 +302,8 @@ impl Raft {
                 last_included_term: last_include_log.term,
                 last_included_index: last_include_log.index,
                 offset,
-                data: self.snapshot[offset..new_offset].to_owned(),
                 done,
+                data: self.snapshot[offset..new_offset].to_owned(),
             }
         };
         let net = net::NetLocalHandle::current();
@@ -490,9 +495,11 @@ impl Raft {
         if args.offset == 0 {
             self.snapshot = args.data;
         } else {
+            assert_eq!(args.offset, self.snapshot.len());
             let mut data = args.data;
             self.snapshot.append(&mut data);
         }
+        self.snapshot_done = args.done;
         self.state.logs.trim_to(args.last_included_index + 1);
         self.state.commit_index = args.last_included_index + 1;
 

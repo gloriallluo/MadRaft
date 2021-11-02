@@ -507,6 +507,7 @@ async fn snapshot_unreliable_3b() {
 }
 
 #[madsim::test]
+#[ignore]
 async fn snapshot_unreliable_recover_3b() {
     // Test: unreliable net, restarts, snapshots, many clients (3B) ...
     generic_test("3B", 5, true, true, false, Some(1000)).await;

@@ -27,7 +27,7 @@ impl Debug for LogEntry {
 /// # Logs
 /// Its' index may be different from its' real ones.
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Logs {
     offset: usize,
     logs: Vec<LogEntry>,
@@ -95,7 +95,7 @@ impl Logs {
 impl Default for Logs {
     fn default() -> Self {
         // Add an empty log entry at start, to be consistent with tester.
-        Self { offset: 0, logs: vec![LogEntry::default()], }
+        Self { offset: 0, logs: vec![LogEntry::default()] }
     }
 }
 

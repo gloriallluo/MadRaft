@@ -303,7 +303,7 @@ impl RaftTester {
         let task = handle.spawn(async move {
             while let Some(cmd) = apply_recver.next().await {
                 match cmd {
-                    ApplyMsg::Command { data, index, .. } => {
+                    ApplyMsg::Command { data, index } => {
                         let entry = bincode::deserialize(&data)
                             .expect("committed command is not an entry");
                         storage.push_and_check(i, index as u64, entry);

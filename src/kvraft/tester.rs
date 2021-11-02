@@ -78,9 +78,10 @@ impl Tester {
 
     /// Maximum snapshot size across all servers
     pub fn snapshot_size(&self) -> usize {
+        // FIXME: file name modified
         self.addrs
             .iter()
-            .map(|&addr| self.handle.fs.get_file_size(addr, "snapshot").unwrap())
+            .map(|&addr| self.handle.fs.get_file_size(addr, "state").unwrap())
             .max()
             .unwrap() as usize
     }
