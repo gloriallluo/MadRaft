@@ -34,7 +34,7 @@ pub enum ApplyMsg {
 }
 
 
-pub const SNAPSHOT_SIZE: usize = 0x8000; // FIXME: GG
+pub const SNAPSHOT_SIZE: usize = 0x8000;
 const RPC_TIMEOUT: Duration = Duration::from_millis(40);
 
 /// # Start
@@ -183,9 +183,9 @@ impl Raft {
         }
     }
 
-    pub(crate) fn reset_state(&mut self, role: Role) {
+    pub(crate) fn reset_raft(&mut self) {
         self.timer = Instant::now();
-        match role {
+        match self.role {
             Role::Leader => {
                 self.snapshot_done = true;
                 self.state.next_index.fill(self.state.logs.end());
@@ -377,14 +377,16 @@ impl Raft {
         false
     }
 
-    pub(crate) fn update_commit_index(&mut self) {
+    /// Update commit_index.
+    /// `commit_this_term`: commit if the last log is from this term.
+    pub(crate) fn update_commit_index(&mut self, commit_this_term: bool) {
         let mut sorted_match = self.state.match_index.clone();
         sorted_match.sort();
         let mid = (self.common_sz + 1) >> 1;
         let commit_index = sorted_match[mid];
         if commit_index > self.state.commit_index {
             if self.state.logs.contains_index(commit_index - 1)
-                && self.state.logs[commit_index - 1].term == self.state.term {
+                && (commit_this_term && self.state.logs[commit_index - 1].term == self.state.term) {
                 self.state.commit_index = commit_index;
             }
         }
@@ -425,8 +427,7 @@ impl Raft {
             self.state.voted_for = Some(args.candidate);
             self.role = Role::Follower;
         }
-        // info!("[{:?}] on_request_vote: candidate={} (term={}), vote_granted={}; \n\t\t\t       not_voted {} ({:?}), log_term_wins {}, log_index_wins {}",
-        //     self, args.candidate, args.term, vote_granted, not_voted, self.state.voted_for, log_term_wins, log_index_wins);
+
         RequestVoteReply { term: self.state.term, vote_granted }
     }
 

@@ -58,7 +58,7 @@ where
     pub async fn call(&self, args: Req) -> Rsp {
         let net = net::NetLocalHandle::current();
         let seq = rand::rng().gen::<usize>();
-        let mut cur = self.leader.load(Ordering::SeqCst);
+        let mut cur = self.leader.load(Ordering::Relaxed);
         let args = Msg { client: self.me, seq, data: args };
         loop {
             let ret = net
@@ -70,25 +70,21 @@ where
             match ret {
                 // Success
                 Ok(Ok(res)) => {
-                    self.leader.store(cur, Ordering::SeqCst);
+                    self.leader.store(cur, Ordering::Relaxed);
                     return res;
                 },
-                Ok(Err(e)) => {
-                    cur = match e {
-                        // The server is not Leader.
-                        Error::NotLeader { hint } => hint,
-                        // Failed to reach consensus,
-                        // i.e. the log entry has been over-written.
-                        Error::Failed => (cur + 1) % self.servers.len(),
-                        // Server timeout, added to log but not committed yet.
-                        // CAUTION: Leader of a minority partition.
-                        Error::Timeout => (cur + 1) % self.servers.len(),
-                    }
+                Ok(Err(e)) => cur = match e {
+                    // The server is not Leader.
+                    Error::NotLeader { hint } => hint,
+                    // Failed to reach consensus,
+                    // i.e. the log entry has been over-written.
+                    Error::Failed => (cur + 1) % self.servers.len(),
+                    // Server timeout, added to log but not committed yet.
+                    // CAUTION: Leader of a minority partition.
+                    Error::Timeout => (cur + 1) % self.servers.len(),
                 },
                 // Client timeout, due to server crash or packet loss.
-                Err(_) => {
-                    cur = (cur + 1) % self.servers.len();
-                }
+                Err(_) => cur = (cur + 1) % self.servers.len(),
             }
         }
     }

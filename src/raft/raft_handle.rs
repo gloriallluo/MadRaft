@@ -1,5 +1,13 @@
 use std::{fmt, io, net::SocketAddr, sync::{Arc, Mutex}};
-use futures::{FutureExt, StreamExt, channel::mpsc, pin_mut, select_biased, stream::FuturesUnordered};
+use futures::{
+    FutureExt, 
+    StreamExt, 
+    channel::mpsc, 
+    pin_mut, 
+    select_biased, 
+    join, 
+    stream::FuturesUnordered, 
+};
 use crate::raft::{raft::*, args::*, log::*};
 use madsim::{time::*, fs, net, task, rand::{self, Rng}};
 use serde::{Deserialize, Serialize};
@@ -13,8 +21,10 @@ struct Persist {
     term: u64,
     voted_for: Option<usize>,
     logs: Logs,
-    
-    /// Snapshot:
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Snapshot {
     snapshot: Vec<u8>,
     last_included_log: Option<LogEntry>,
 }
@@ -78,19 +88,11 @@ impl RaftHandle {
 
     async fn run(&self) {
         loop {
+            self.inner.lock().unwrap().reset_raft();
             match self.role() {
-                Role::Leader => {
-                    self.inner.lock().unwrap().reset_state(Role::Leader);
-                    self.run_leader().await;
-                },
-                Role::Candidate => {
-                    self.inner.lock().unwrap().reset_state(Role::Candidate);
-                    self.run_candidate().await;
-                },
-                Role::Follower => {
-                    self.inner.lock().unwrap().reset_state(Role::Follower);
-                    self.run_follower().await;
-                },
+                Role::Leader => self.run_leader().await,
+                Role::Candidate => self.run_candidate().await,
+                Role::Follower => self.run_follower().await,
             };
         }
     }
@@ -220,12 +222,17 @@ impl RaftHandle {
     }
 
     async fn apply(&self) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.update_commit_index(false);
+            inner.apply();
+        }
         loop {
             // Update commit_index every 100 milliseconds.
             sleep(Duration::from_millis(100)).await;
             // update `commit_index` due to `match_index`, and apply logs.
             let mut inner = self.inner.lock().unwrap();
-            inner.update_commit_index();
+            inner.update_commit_index(true);
             inner.apply();
         }
     }
@@ -269,7 +276,7 @@ impl RaftHandle {
                             let mut inner = self.inner.lock().unwrap();
                             if inner.handle_request_vote(reply) { return; }
                             if count >= majority && inner.role == Role::Candidate {
-                                info!("[{:?}] Wins election, turns to leader.", inner);
+                                debug!("[{:?}] Wins election, turns to leader.", inner);
                                 inner.role = Role::Leader;
                                 return;
                             }
@@ -360,52 +367,74 @@ impl RaftHandle {
     ///
     /// See paper's Figure 2 for a description of what should be persistent.
     async fn persist(&self) -> io::Result<()> {
-        let persist = {
+        let (persist, snapshot) = {
             let mut inner = self.inner.lock().unwrap();
-            let persist: Persist = Persist {
+            let persist = Persist {
                 term: inner.state.term,
                 voted_for: inner.state.voted_for,
                 logs: inner.state.logs.clone(),
+            };
+            let snapshot = Snapshot {
                 snapshot: inner.snapshot.clone(),
                 last_included_log: inner.last_included_log.clone(),
             };
             let persist = bincode::serialize(&persist).unwrap();
+            let snapshot = bincode::serialize(&snapshot).unwrap();
             inner.log_size = persist.len();
-            persist
+            (persist, snapshot)
         };
 
-        let paths = ["state1", "state"];
-        for path in paths {
-            let file = fs::File::create(path).await?;
+        let f1 = async {
+            let file = fs::File::create("state").await?;
             file.write_all_at(&persist, 0).await?;
             file.sync_all().await?;
-        }
+            io::Result::<()>::Ok(())
+        };
 
-        Ok(())
+        let f2 = async {
+            let file = fs::File::create("snapshot").await?;
+            file.write_all_at(&snapshot, 0).await?;
+            file.sync_all().await?;
+            io::Result::<()>::Ok(())
+        };
+        
+        let (r1, r2) = join!(f1, f2);
+        r1.and(r2)
     }
 
     /// Restore previously persisted state.
     async fn restore(&self) -> io::Result<()> {
-        let paths = ["state", "state1"];
-        for path in paths {
-            match fs::read(path).await {
+        let f1 = async {
+            match fs::read("state").await {
                 Ok(persist) => {
-                    let persist = bincode::deserialize(&persist);
-                    if persist.is_err() { continue; }
-                    let persist: Persist = persist.unwrap();
+                    let persist: Persist = bincode::deserialize(&persist).unwrap();
                     let mut inner = self.inner.lock().unwrap();
                     inner.state.term = persist.term;
                     inner.state.voted_for = persist.voted_for;
                     inner.state.logs = persist.logs;
-                    inner.snapshot = persist.snapshot;
-                    inner.last_included_log = persist.last_included_log;
-                    return Ok(());
+                    Ok(())
                 },
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {},
-                Err(e) => return Err(e),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
             }
-        }
-        Ok(())
+        };
+
+        let f2 = async {
+            match fs::read("snapshot").await {
+                Ok(snapshot) => {
+                    let snapshot: Snapshot = bincode::deserialize(&snapshot).unwrap();
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.snapshot = snapshot.snapshot;
+                    inner.last_included_log = snapshot.last_included_log;
+                    Ok(())
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            }
+        };
+        
+        let (r1, r2) = join!(f1, f2);
+        r1.and(r2)
     }
 
     /// Add some RPC handlers.

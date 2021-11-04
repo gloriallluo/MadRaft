@@ -1,9 +1,8 @@
 use crate::{kvraft::{msg::*, server_fut::*}, raft};
-use madsim::{fs, net, task, time};
+use madsim::{net, task, time};
 use serde::{Deserialize, Serialize};
 use futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use std::{
-    io,
     fmt::{self, Debug},
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -27,10 +26,7 @@ struct ServerCommand<S: State> {
     command: S::Command,
 }
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// struct Persist {
-//     applied: Vec<Option<usize>>,
-// }
+type Snapshot<S> = (S, HashMap<usize, usize>, HashMap<usize, <S as State>::Output>);
 
 
 pub struct Server<S: State> {
@@ -42,6 +38,7 @@ pub struct Server<S: State> {
     /// Last applied seq number for each client.
     /// Shared via snapshot
     last_applied: Arc<Mutex<HashMap<usize, usize>>>,
+    last_output: Arc<Mutex<HashMap<usize, S::Output>>>,
 }
 
 impl<S: State> fmt::Debug for Server<S> {
@@ -66,6 +63,7 @@ impl<S: State> Server<S> {
             state: Arc::new(Mutex::new(S::default())),
             res: Arc::new(Mutex::new(KvOutput::default())),
             last_applied: Arc::new(Mutex::new(HashMap::new())),
+            last_output: Arc::new(Mutex::new(HashMap::new())),
         });
         let max_log_size = max_raft_state
             .unwrap_or(usize::MAX);
@@ -100,16 +98,19 @@ impl<S: State> Server<S> {
                         {
                             let mut kv_output = this.res.lock().unwrap();
                             let mut last_applied = this.last_applied.lock().unwrap();
+                            let mut last_output = this.last_output.lock().unwrap();
 
                             // not applied in state machine
                             if Some(&seq) != last_applied.get(&client) {
                                 let mut state = this.state.lock().unwrap();
-                                debug!("[{:?}] commit index {}, seq {}: {:?}", this, index, seq, command);
                                 let output = state.apply(command);
                                 last_applied.insert(client, seq);
+                                last_output.insert(client, output.clone());
                                 kv_output.output.insert(seq, output);
-                                snapshot = if this.raft.log_size() > max_log_size {
-                                    Some(bincode::serialize(&(&*state, &*last_applied)).unwrap())
+                                snapshot = if this.raft.log_size() > max_log_size / 2 {
+                                    Some(bincode::serialize(
+                                        &(&*state, &*last_applied, &*last_output)
+                                    ).unwrap())
                                 } else {
                                     None
                                 };
@@ -127,10 +128,10 @@ impl<S: State> Server<S> {
                     },
                     raft::ApplyMsg::Snapshot { data, index, term } => {
                         if this.raft.cond_install_snapshot(term, index as u64, &data).await {
-                            debug!("[{:?}] snapshot index {}", this, index);
-                            let snapshot: (S, HashMap<usize, usize>) = bincode::deserialize(&data).unwrap();
+                            let snapshot: Snapshot<S> = bincode::deserialize(&data).unwrap();
                             *this.state.lock().unwrap() = snapshot.0;
                             *this.last_applied.lock().unwrap() = snapshot.1;
+                            *this.last_output.lock().unwrap() = snapshot.2;
                         }
                     },
                 }
@@ -153,12 +154,22 @@ impl<S: State> Server<S> {
         if let Some(res) = self.res.lock().unwrap().output.get(&seq) {
             return Ok(res.clone());
         }
+
+        if Some(&seq) == self.last_applied.lock().unwrap().get(&client) {
+            let res = self.last_output
+                .lock()
+                .unwrap()
+                .get(&client)
+                .unwrap()
+                .clone();
+            return Ok(res);
+        }
+
         if self.raft.is_leader() {
             let cmd: ServerCommand<S> = ServerCommand { client, seq, command: cmd };
             match self.raft.start(&bincode::serialize(&cmd).unwrap()).await {
-                Ok(raft::Start { term, index }) => {
-                    // info!("[{:?}] start (seq {}) index {}, term {}, cmd {:?}",
-                    //     self, seq, index, term, cmd);
+                Ok(raft::Start { .. }) => {
+                    // info!("[{:?}] start (seq {}) cmd {:?}", self, seq, cmd);
                     let f = ServerFuture::new(seq,  self.res.clone());
                     time::timeout(SERVER_TIMEOUT, f)
                         .await
@@ -173,38 +184,6 @@ impl<S: State> Server<S> {
             Err(Error::NotLeader { hint: self.raft.leader() })
         }
     }
-
-    // async fn persist(&self) -> io::Result<()> {
-    //     let persist = Persist {
-    //         applied: self.applied.clone(),
-    //     };
-    //     let persist = bincode::serialize(&persist).unwrap();
-    //     let paths = ["server1", "server"];
-    //     for path in paths {
-    //         let file = fs::File::create(path).await?;
-    //         file.write_all_at(&persist, 0).await?;
-    //         file.sync_all().await?;
-    //     }
-    //     Ok(())
-    // }
-
-    // async fn restore(&mut self) -> io::Result<()> {
-    //     let paths = ["server", "server1"];
-    //     for path in paths {
-    //         match fs::read(path).await {
-    //             Ok(persist) => {
-    //                 let persist = bincode::deserialize(&persist);
-    //                 if persist.is_err() { continue; }
-    //                 let persist: Persist = persist.unwrap();
-    //                 self.applied = persist.applied;
-    //                 return Ok(());
-    //             },
-    //             Err(e) if e.kind() == io::ErrorKind::NotFound => {},
-    //             Err(e) => return Err(e),
-    //         }
-    //     }
-    //     Ok(())
-    // }
 }
 
 pub type KvServer = Server<Kv>;

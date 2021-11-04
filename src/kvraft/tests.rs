@@ -186,7 +186,6 @@ async fn generic_test(
             t.connect_all();
         }
 
-        debug!("wait for clients");
         for (i, task) in cas.into_iter().enumerate() {
             let j = task.await;
             if j < 10 {
@@ -507,7 +506,6 @@ async fn snapshot_unreliable_3b() {
 }
 
 #[madsim::test]
-#[ignore]
 async fn snapshot_unreliable_recover_3b() {
     // Test: unreliable net, restarts, snapshots, many clients (3B) ...
     generic_test("3B", 5, true, true, false, Some(1000)).await;
