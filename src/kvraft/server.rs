@@ -169,7 +169,6 @@ impl<S: State> Server<S> {
             let cmd: ServerCommand<S> = ServerCommand { client, seq, command: cmd };
             match self.raft.start(&bincode::serialize(&cmd).unwrap()).await {
                 Ok(raft::Start { .. }) => {
-                    // info!("[{:?}] start (seq {}) cmd {:?}", self, seq, cmd);
                     let f = ServerFuture::new(seq,  self.res.clone());
                     time::timeout(SERVER_TIMEOUT, f)
                         .await

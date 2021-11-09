@@ -31,6 +31,7 @@ pub enum Op {
         gids: Vec<Gid>,
     },
     Move {
+        /// assign the shard to gid
         shard: usize,
         gid: Gid,
     },

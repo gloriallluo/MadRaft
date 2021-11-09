@@ -3,6 +3,7 @@ use futures::future;
 use log::*;
 use madsim::{task, time};
 use std::{collections::HashMap, net::SocketAddr};
+use madsim::time::Duration;
 
 macro_rules! addrs {
     ($($addr:expr),* $(,)?) => {
@@ -291,7 +292,7 @@ async fn multi_4a() {
     }
 
     let c1 = ck.query().await;
-    assert_eq!(c, c1);
+    assert_eq!(c, c1); // FIXME
 
     info!("  ... Passed");
 
