@@ -5,17 +5,17 @@ use std::{
     pin::Pin,
 };
 use futures::{Future, task::{Context, Waker}};
-use crate::kvraft::server::State;
+use crate::kvraft::state::State;
 
 
-pub(crate) struct KvOutput<S: State> {
+pub(crate) struct Output<S: State> {
     /// seq -> Output
     pub(crate) output: HashMap<usize, S::Output>,
     /// seq -> Waker
     pub(crate) waker: HashMap<usize, Waker>,
 }
 
-impl<S: State> Default for KvOutput<S> {
+impl<S: State> Default for Output<S> {
     fn default() -> Self {
         Self {
             output: HashMap::new(),
@@ -26,13 +26,13 @@ impl<S: State> Default for KvOutput<S> {
 
 pub(crate) struct ServerFuture<S: State> {
     seq: usize,
-    pub(crate) res: Arc<Mutex<KvOutput<S>>>,
+    pub(crate) res: Arc<Mutex<Output<S>>>,
 }
 
 impl<S: State> ServerFuture<S> {
     pub(crate) fn new(
         seq: usize,
-        res: Arc<Mutex<KvOutput<S>>>,
+        res: Arc<Mutex<Output<S>>>,
     ) -> Self {
         Self { seq, res }
     }

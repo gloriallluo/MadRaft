@@ -428,9 +428,7 @@ async fn unreliable2_4b() {
 
 #[ignore]
 #[madsim::test]
-async fn unreliable3_4b() {
-    // TODO: linearizable
-}
+async fn unreliable3_4b() {}
 
 /// optional test to see whether servers are deleting
 /// shards for which they are no longer responsible.

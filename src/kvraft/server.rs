@@ -1,4 +1,4 @@
-use crate::{kvraft::{msg::*, server_fut::*}, raft};
+use crate::{kvraft::{msg::*, server_fut::*, state::*}, raft};
 use madsim::{net, task, time};
 use serde::{Deserialize, Serialize};
 use futures::{StreamExt, channel::mpsc::UnboundedReceiver};
@@ -12,12 +12,6 @@ use std::{
 
 
 const SERVER_TIMEOUT: Duration = Duration::from_millis(400);
-
-pub trait State: net::Message + Default {
-    type Command: net::Message + Clone;
-    type Output: net::Message + Clone;
-    fn apply(&mut self, cmd: Self::Command) -> Self::Output;
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ServerCommand<S: State> {
@@ -33,8 +27,8 @@ pub struct Server<S: State> {
     raft: raft::RaftHandle,
     me: usize,
     /// Shared via snapshot
-    state: Arc<Mutex<S>>,
-    res: Arc<Mutex<KvOutput<S>>>,
+    pub(crate) state: Arc<Mutex<S>>,
+    res: Arc<Mutex<Output<S>>>,
     /// Last applied seq number for each client.
     /// Shared via snapshot
     last_applied: Arc<Mutex<HashMap<usize, usize>>>,
@@ -61,7 +55,7 @@ impl<S: State> Server<S> {
             raft,
             me,
             state: Arc::new(Mutex::new(S::default())),
-            res: Arc::new(Mutex::new(KvOutput::default())),
+            res: Arc::new(Mutex::new(Output::default())),
             last_applied: Arc::new(Mutex::new(HashMap::new())),
             last_output: Arc::new(Mutex::new(HashMap::new())),
         });
@@ -187,45 +181,3 @@ impl<S: State> Server<S> {
 
 pub type KvServer = Server<Kv>;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct Kv {
-    data: HashMap<String, String>,
-}
-
-impl State for Kv {
-    type Command = Op;
-    type Output = String;
-
-    fn apply(&mut self, cmd: Self::Command) -> Self::Output {
-        match cmd {
-            Op::Get { key } => self.get(key),
-            Op::Put { key, value } => self.put(key, value),
-            Op::Append { key, value } => self.append(key, value),
-        }
-    }
-}
-
-impl Kv {
-    fn get(&self, key: String) -> String {
-        self.data
-            .get(&key)
-            .map_or("", |v| v.as_str())
-            .to_string()
-    }
-
-    fn put(&mut self, key: String, value: String) -> String {
-        self.data
-            .insert(key, value)
-            .unwrap_or("".to_string())
-    }
-
-    fn append(&mut self, key: String, value: String) -> String {
-        self.data
-            .get_mut(&key)
-            .map_or("", |v| {
-                v.push_str(&value);
-                v.as_str()
-            })
-            .to_string()
-    }
-}

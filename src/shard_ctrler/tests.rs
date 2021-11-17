@@ -292,7 +292,7 @@ async fn multi_4a() {
     }
 
     let c1 = ck.query().await;
-    assert_eq!(c, c1); // FIXME
+    assert_eq!(c, c1);
 
     info!("  ... Passed");
 

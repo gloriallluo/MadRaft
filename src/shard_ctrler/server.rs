@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::{
     shard_ctrler::{msg::*, N_SHARDS},
-    kvraft::server::{Server, State},
+    kvraft::{server::Server, state::State},
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,7 @@ impl State for ShardInfo {
     type Output = Option<Config>;
 
     fn apply(&mut self, cmd: Self::Command) -> Self::Output {
-        debug!("apply: {:?}", cmd);
+        // debug!("apply: {:?}", cmd);
         match cmd {
             Op::Query { num } => {
                 if num < self.configs.len() as ConfigId {

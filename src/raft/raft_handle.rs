@@ -114,12 +114,10 @@ impl RaftHandle {
             });
         let apply_task = self.apply().fuse();
         pin_mut!(apply_task);
-        loop {
-            select_biased! {
-                _ = heartbeat_tasks.select_next_some() => return,
-                _ = apply_task => {},
-                complete => unreachable!(),
-            }
+        select_biased! {
+            _ = heartbeat_tasks.select_next_some() => return,
+            _ = apply_task => unreachable!(),
+            complete => unreachable!(),
         }
     }
 
@@ -379,7 +377,11 @@ impl RaftHandle {
                 last_included_log: inner.last_included_log.clone(),
             };
             let persist = bincode::serialize(&persist).unwrap();
-            let snapshot = bincode::serialize(&snapshot).unwrap();
+            let snapshot = if snapshot.last_included_log.is_some() {
+                Some(bincode::serialize(&snapshot).unwrap())
+            } else {
+                None
+            };
             inner.log_size = persist.len();
             (persist, snapshot)
         };
@@ -392,9 +394,11 @@ impl RaftHandle {
         };
 
         let f2 = async {
-            let file = fs::File::create("snapshot").await?;
-            file.write_all_at(&snapshot, 0).await?;
-            file.sync_all().await?;
+            if let Some(snapshot) = snapshot {
+                let file = fs::File::create("snapshot").await?;
+                file.write_all_at(&snapshot, 0).await?;
+                file.sync_all().await?;
+            }
             io::Result::<()>::Ok(())
         };
         
