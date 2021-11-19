@@ -214,7 +214,7 @@ impl RaftTester {
     /// if retry==false, calls start() only once, in order
     /// to simplify the early Lab 2B tests.
     pub async fn one(&self, cmd: Entry, expected_servers: usize, retry: bool) -> u64 {
-        info!("one({:?}, {})", cmd, expected_servers);
+        debug!("one({:?}, {})", cmd, expected_servers);
         let t0 = Instant::now();
         let mut starts = 0;
         while t0.elapsed() < Duration::from_secs(10) {
@@ -263,14 +263,14 @@ impl RaftTester {
 
     /// detach server i from the net.
     pub fn disconnect(&self, i: usize) {
-        info!("disconnect({})", i);
+        debug!("disconnect({})", i);
         self.connected[i].store(false, Ordering::SeqCst);
         self.handle.net.disconnect(self.addrs[i]);
     }
 
     /// attach server i to the net.
     pub fn connect(&self, i: usize) {
-        info!("connect({})", i);
+        debug!("connect({})", i);
         self.connected[i].store(true, Ordering::SeqCst);
         self.handle.net.connect(self.addrs[i]);
     }
@@ -326,7 +326,7 @@ impl RaftTester {
     }
 
     pub fn crash1(&self, i: usize) {
-        info!("crash({})", i);
+        debug!("crash({})", i);
         self.handle.kill(self.addrs[i]);
         self.rafts.lock().unwrap()[i] = None;
     }

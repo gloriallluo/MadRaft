@@ -32,9 +32,6 @@ pub struct AppendEntryArgs {
 pub struct AppendEntryReply {
     pub(crate) term: u64,
     pub(crate) success: bool,
-    // for optimization when refused
-    // pub(crate) conflict_term: Option<u64>,
-    // pub(crate) conflict_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

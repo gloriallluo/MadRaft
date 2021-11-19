@@ -1,7 +1,7 @@
 use crate::{
     shardkv::msg::*,
     kvraft::client::ClerkCore,
-    shard_ctrler::{client::Clerk as CtrlerClerk, msg::Config},
+    shard_ctrler::client::Clerk as CtrlerClerk,
 };
 use std::{
     net::SocketAddr,
@@ -33,8 +33,8 @@ impl Clerk {
             let key = key.clone();
             match self.call(Op::Get { key }).await {
                 Reply::Get { value } => return value.unwrap_or("".to_string()),
-                Reply::Ok => return "".to_string(),
-                Reply::WrongGroup => continue,
+                Reply::WrongGroup => self.renew_cores().await,
+                _ => unreachable!(),
             };
         }
     }
@@ -44,9 +44,9 @@ impl Clerk {
             let key = key.clone();
             let value = value.clone();
             match self.call(Op::Put { key, value }).await {
-                Reply::Get { .. } => unreachable!(),
                 Reply::Ok => return,
-                Reply::WrongGroup => continue,
+                Reply::WrongGroup => self.renew_cores().await,
+                _ => unreachable!(),
             };
         }
     }
@@ -56,9 +56,9 @@ impl Clerk {
             let key = key.clone();
             let value = value.clone();
             match self.call(Op::Append { key, value }).await {
-                Reply::Get { .. } => unreachable!(),
                 Reply::Ok => return,
-                Reply::WrongGroup => continue,
+                Reply::WrongGroup => self.renew_cores().await,
+                _ => unreachable!(),
             };
         }
     }

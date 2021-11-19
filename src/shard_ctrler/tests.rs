@@ -3,7 +3,6 @@ use futures::future;
 use log::*;
 use madsim::{task, time};
 use std::{collections::HashMap, net::SocketAddr};
-use madsim::time::Duration;
 
 macro_rules! addrs {
     ($($addr:expr),* $(,)?) => {

@@ -25,7 +25,6 @@ impl Debug for LogEntry {
 
 
 /// # Logs
-/// Its' index may be different from its' real ones.
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Logs {

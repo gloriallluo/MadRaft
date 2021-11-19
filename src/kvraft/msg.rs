@@ -24,4 +24,3 @@ pub enum Error {
     #[error("failed to reach consensus")]
     Failed,
 }
-

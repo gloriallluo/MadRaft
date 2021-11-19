@@ -1,20 +1,37 @@
 use crate::{
+    kvraft::{
+        client::ClerkCore,
+        server::Server,
+        state::State,
+    },
+    shard_ctrler::{
+        client::Clerk as CtrlerClerk,
+        msg::{Config, Gid, ConfigId},
+        N_SHARDS,
+    },
     shardkv::{msg::*, key2shard},
-    kvraft::{server::Server, state::State},
-    shard_ctrler::client::Clerk as CtrlerClerk,
 };
 use serde::{Deserialize, Serialize};
-use madsim::{task, net, time::{self, Duration}};
+use madsim::{task, time::{self, Duration}};
 use std::{
-    net::SocketAddr, 
-    sync::Arc,
+    net::SocketAddr,
+    fmt::{self, Formatter},
+    sync::{Arc, Mutex},
     collections::HashMap,
 };
+use futures::{
+    select_biased,
+    StreamExt,
+    stream::FuturesUnordered,
+};
+
 
 pub struct ShardKvServer {
     gid: u64,
     ctrl_ck: CtrlerClerk,
-    inner: Arc<Server<ShardKv>>,
+    sevr_ck: Mutex<HashMap<Gid, Arc<ClerkCore<Op, Reply>>>>,
+    _inner: Arc<Server<ShardKv>>,
+    config: Mutex<Config>,
 }
 
 impl ShardKvServer {
@@ -25,73 +42,127 @@ impl ShardKvServer {
         me: usize,
         max_raft_state: Option<usize>,
     ) -> Arc<Self> {
-        let inner = Server::new(servers, me, max_raft_state).await;
+        let config = ctrl_ck.query().await;
+        let _inner = Server::new(servers, me, max_raft_state).await;
         let this = Arc::new(ShardKvServer { 
-            gid, 
+            gid,
             ctrl_ck,
-            inner, 
+            sevr_ck: Mutex::new(HashMap::new()),
+            _inner,
+            config: Mutex::new(config),
         });
-        let that = this.clone();
-        that.start_check_config();
-        let that = this.clone();
-        that.start_listen_config();
+
+        this.start_check_config();
         this
     }
 
-    fn start_check_config(self: Arc<Self>) {
+    fn start_check_config(self: &Arc<Self>) {
+        let this = self.clone();
         task::spawn(async move {
+            let mut new_cfg: ConfigId = 0;
             loop {
-                {
-                    let config = self.ctrl_ck.query().await;
-                    config.shards
-                        .iter()
-                        .enumerate()
-                        .for_each(|(shard, gid)| {
-                            if *gid == self.gid {
-                                if !self.inner.contains_shard(shard) {
-                                    self.inner.allocate_shard(shard);
+                let config = this.ctrl_ck.query_at(new_cfg).await;
+                // debug!("[{:?}] start_check_config: get {:?}", this, config);
+                let cfg = config.num;
+                config.groups
+                    .iter()
+                    .for_each(|(gid, servers)| {
+                        if !this.sevr_ck.lock().unwrap().contains_key(gid) {
+                            let servers = servers.clone();
+                            this.sevr_ck.lock().unwrap().insert(
+                                *gid, 
+                                Arc::new(ClerkCore::new(servers)),
+                            );
+                        }
+                    });
+                let prev_shards = this.config.lock().unwrap().shards;
+                *this.config.lock().unwrap() = config.clone();
+
+                let mut ask_for_shards = FuturesUnordered::new();
+                for (shard, gid) in config.shards.iter().enumerate() {
+                    let prev_gid = prev_shards[shard];
+                    // debug!("[{:?}] start_check_config ({}): shard {}, now_gid {}, prev_gid {}",
+                    //     self, cfg, shard, gid, prev_gid);
+                    // a new shard which didn't belong to me
+                    if *gid == this.gid && prev_gid != this.gid {
+                        let this = this.clone();
+                        ask_for_shards.push(async move {
+                            // debug!("[{:?}] start_check_config: shard {}, prev {} -> me {}",
+                            //     this, shard, prev_gid, this.gid);
+                            let prev_core = this.sevr_ck
+                                .lock()
+                                .unwrap()
+                                .get(&prev_gid)
+                                .map(|c| c.clone());
+
+                            let mut skip = false;
+                            let data = if let Some(core) = prev_core.clone() {
+                                let d: Option<Vec<u8>>;
+                                loop {
+                                    // debug!("[{:?}] start_check_config ({}): tell {} to remove shard {}",
+                                    //     this, cfg, prev_gid, shard);
+                                    match core.call(Op::RemoveShard { cfg, shard }).await {
+                                        Reply::InstallShard { data, .. } => { d = Some(data); break; },
+                                        Reply::Retry => continue,
+                                        Reply::Ok => { d = None; skip = true; break; },
+                                        _ => unreachable!(),
+                                    }
                                 }
-                            } else if self.inner.contains_shard(shard) {
-                                // TODO: send the shard to the real server group
+                                d
+                            } else {
+                                None
+                            };
+
+                            if !skip {
+                                let my_core = this.sevr_ck
+                                    .lock().unwrap().get(&this.gid).unwrap().clone();
+                                // debug!("[{:?}] start_check_config ({}): install shard {}",
+                                //     this, cfg, shard);
+                                my_core.call(Op::InstallShard { cfg, shard, data }).await;
+                                if let Some(core) = prev_core {
+                                    match core.call(Op::ShardInstalled { cfg, shard }).await {
+                                        Reply::Ok => {},
+                                        _ => unreachable!(),
+                                    }
+                                }
                             }
                         });
+                    }
+                }
+                loop {
+                    select_biased! {
+                        _ = ask_for_shards.select_next_some() => continue,
+                        complete => break,
+                    }
                 }
                 time::sleep(Duration::from_millis(80)).await;
+                new_cfg = cfg + 1;
             }
         }).detach();
     }
+}
 
-    fn start_listen_config(self: Arc<Self>) {
-        // let net = net::NetLocalHandle::current();
-        // net.add_rpc_handler(move |msg: String| {
-        //     let this = self.clone();
-        //     async move { }
-        // });
+impl fmt::Debug for ShardKvServer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "ShardServer({})", self.gid)
     }
 }
 
-impl Server<ShardKv> {
-    fn contains_shard(&self, shard: usize) -> bool {
-        self.state.lock().unwrap().shard2kv.contains_key(&shard)
-    }
 
-    fn allocate_shard(&self, shard: usize) {
-        self.state.lock().unwrap().shard2kv.insert(shard, HashMap::new());
-    }
-
-    fn install_shard(&self, shard: usize, kv: HashMap<String, String>) {
-        self.state.lock().unwrap().shard2kv.insert(shard, kv);
-    }
-
-    fn remove_shard(&self, shard: usize) -> HashMap<String, String> {
-        self.state.lock().unwrap().shard2kv.remove(&shard).unwrap()
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ShardKv {
     /// shard -> kv
     shard2kv: HashMap<usize, HashMap<String, String>>,
+    /// shard -> last ConfigId applied
+    shard2cfg: [ConfigId; N_SHARDS],
+    /// shard -> contained
+    contains: [bool; N_SHARDS],
+}
+
+impl fmt::Debug for ShardKv {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.shard2kv.keys())
+    }
 }
 
 impl State for ShardKv {
@@ -102,6 +173,9 @@ impl State for ShardKv {
         match cmd {
             Op::Get { key } => {
                 let shard = key2shard(&key);
+                if !self.contains[shard] {
+                    return Reply::WrongGroup;
+                }
                 self.shard2kv
                     .get(&shard)
                     .map_or(
@@ -109,13 +183,16 @@ impl State for ShardKv {
                         |kv| {
                             let value = kv
                                 .get(&key)
-                                .map_or(None, |v| Some(v.clone()));
+                                .map(|v| v.clone());
                             Reply::Get { value }
                         }
                     )
             },
             Op::Put { key, value } => {
                 let shard = key2shard(&key);
+                if !self.contains[shard] {
+                    return Reply::WrongGroup;
+                }
                 self.shard2kv
                     .get_mut(&shard)
                     .map_or(
@@ -128,23 +205,56 @@ impl State for ShardKv {
             },
             Op::Append { key, value } => {
                 let shard = key2shard(&key);
+                if !self.contains[shard] {
+                    return Reply::WrongGroup;
+                }
                 self.shard2kv
                     .get_mut(&shard)
                     .map_or(
                         Reply::WrongGroup,
                         |kv| {
-                            kv.get_mut(&key).map(|v| v.push_str(&value));
+                            kv
+                                .get_mut(&key)
+                                .map(|v| v.push_str(&value));
                             Reply::Ok
                         }
                     )
             },
-            Op::InstallShard { shard, data } => {
-                let kv: HashMap<String, String> = bincode::deserialize(&data).unwrap();
-                self.shard2kv.insert(shard, kv);
+            Op::InstallShard { cfg, shard, data } => {
+                if cfg > self.shard2cfg[shard] {
+                    let kv: HashMap<String, String> = data.map_or(
+                        HashMap::new(),
+                        |d| bincode::deserialize(&d).unwrap(),
+                    );
+                    self.shard2kv.insert(shard, kv);
+                    self.shard2cfg[shard] = cfg;
+                    self.contains[shard] = true;
+                    debug!("install ({:?}): shard {}, my status {:?}", cfg, shard, self);
+                }
                 Reply::Ok
             },
-            Op::RemoveShard { shard } => {
-                self.shard2kv.remove(&shard);
+            Op::RemoveShard { cfg, shard } => {
+                if cfg > self.shard2cfg[shard] {
+                    if let Some(data) = self.shard2kv
+                        .get(&shard)
+                        .map(|kv| kv.clone()) {
+                        let data = bincode::serialize(&data).unwrap();
+                        self.shard2cfg[shard] = cfg;
+                        self.contains[shard] = false;
+                        Reply::InstallShard { shard, data }
+                    } else {
+                        Reply::Retry
+                    }
+                } else {
+                    Reply::Ok
+                }
+            },
+            Op::ShardInstalled { cfg, shard } => {
+                if cfg > self.shard2cfg[shard] {
+                    debug!("remove ({:?}): shard {}, my status {:?}", cfg, shard, self);
+                    self.shard2kv.remove(&shard);
+                    self.shard2cfg[shard] = cfg;
+                }
                 Reply::Ok
             }
         }

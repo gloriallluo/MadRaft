@@ -242,7 +242,8 @@ impl Raft {
                 net.call_timeout::<AppendEntryArgs, AppendEntryReply>(
                     addr, args, RPC_TIMEOUT,
                 ).await
-            }, new_next,
+            },
+            new_next,
         )
     }
 
@@ -310,9 +311,11 @@ impl Raft {
         (
             async move {
                 net.call_timeout::<InstallSnapshotArgs, InstallSnapshotReply>(
-                    addr, args, RPC_TIMEOUT
+                    addr, args, RPC_TIMEOUT,
                 ).await
-            }, done, new_next,
+            },
+            done,
+            new_next,
         )
     }
 
@@ -457,6 +460,7 @@ impl Raft {
             return AppendEntryReply { term: self.state.term, success };
         }
 
+        // TODO: improve performance
         self.state.logs.trim_from(args.prev_log_index + 1);
         self.state.logs.append(&mut args.log_entries);
         
@@ -514,4 +518,3 @@ impl fmt::Debug for Raft {
         write!(f, "{} (T{}), {:?}", self.me, self.state.term, self.role)
     }
 }
-

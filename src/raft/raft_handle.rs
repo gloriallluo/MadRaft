@@ -1,12 +1,12 @@
 use std::{fmt, io, net::SocketAddr, sync::{Arc, Mutex}};
 use futures::{
-    FutureExt, 
-    StreamExt, 
-    channel::mpsc, 
-    pin_mut, 
-    select_biased, 
-    join, 
-    stream::FuturesUnordered, 
+    FutureExt,
+    StreamExt,
+    channel::mpsc,
+    pin_mut,
+    select_biased,
+    join,
+    stream::FuturesUnordered,
 };
 use crate::raft::{raft::*, args::*, log::*};
 use madsim::{time::*, fs, net, task, rand::{self, Rng}};
@@ -156,7 +156,7 @@ impl RaftHandle {
                                             // AppendEntry accepted.
                                             0 => { complete = true; break; },
                                             // retry due to log mismatch.
-                                            1 => { step <<= 1; break; },
+                                            1 => { step <<= 2; break; },
                                             // follower lag too much, send snapshot.
                                             2 => { append_entry = false; break; },
                                             // turn follower
@@ -272,9 +272,9 @@ impl RaftHandle {
                         Ok(reply) => {
                             if reply.vote_granted { count += 1; }
                             let mut inner = self.inner.lock().unwrap();
+                            // turn to follower
                             if inner.handle_request_vote(reply) { return; }
                             if count >= majority && inner.role == Role::Candidate {
-                                debug!("[{:?}] Wins election, turns to leader.", inner);
                                 inner.role = Role::Leader;
                                 return;
                             }
@@ -374,7 +374,11 @@ impl RaftHandle {
             };
             let snapshot = Snapshot {
                 snapshot: inner.snapshot.clone(),
-                last_included_log: inner.last_included_log.clone(),
+                last_included_log: inner.last_included_log
+                    .as_ref()
+                    .map(|log| {
+                        LogEntry { term: log.term, index: log.index, data: vec![] }
+                    }),
             };
             let persist = bincode::serialize(&persist).unwrap();
             let snapshot = if snapshot.last_included_log.is_some() {

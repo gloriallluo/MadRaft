@@ -20,6 +20,7 @@ struct ServerCommand<S: State> {
     command: S::Command,
 }
 
+/// (state, last applied seq, last output)
 type Snapshot<S> = (S, HashMap<usize, usize>, HashMap<usize, <S as State>::Output>);
 
 
@@ -96,6 +97,10 @@ impl<S: State> Server<S> {
 
                             // not applied in state machine
                             if Some(&seq) != last_applied.get(&client) {
+                                if client < 200 {
+                                    debug!("[{:?}] start_listen_channel: apply client {}, seq {}, {:?}",
+                                        this, client, seq, command);
+                                }
                                 let mut state = this.state.lock().unwrap();
                                 let output = state.apply(command);
                                 last_applied.insert(client, seq);
@@ -143,7 +148,12 @@ impl<S: State> Server<S> {
         self.raft.is_leader()
     }
 
-    async fn apply(&self, client: usize, seq: usize, cmd: S::Command) -> Result<S::Output, Error> {
+    pub async fn apply(
+        &self,
+        client: usize,
+        seq: usize,
+        cmd: S::Command,
+    ) -> Result<S::Output, Error> {
         // Repeat request
         if let Some(res) = self.res.lock().unwrap().output.get(&seq) {
             return Ok(res.clone());
@@ -151,18 +161,14 @@ impl<S: State> Server<S> {
 
         if Some(&seq) == self.last_applied.lock().unwrap().get(&client) {
             let res = self.last_output
-                .lock()
-                .unwrap()
-                .get(&client)
-                .unwrap()
-                .clone();
+                .lock().unwrap().get(&client).unwrap().clone();
             return Ok(res);
         }
 
         if self.raft.is_leader() {
             let cmd: ServerCommand<S> = ServerCommand { client, seq, command: cmd };
             match self.raft.start(&bincode::serialize(&cmd).unwrap()).await {
-                Ok(raft::Start { .. }) => {
+                Ok(_) => {
                     let f = ServerFuture::new(seq,  self.res.clone());
                     time::timeout(SERVER_TIMEOUT, f)
                         .await
