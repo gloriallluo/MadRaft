@@ -4,7 +4,6 @@ use madsim::{net, time::*, rand::{self, Rng}};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-
 const CLIENT_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub struct Clerk {
@@ -66,7 +65,8 @@ where
                     self.servers[cur],
                     args.clone(),
                     CLIENT_TIMEOUT,
-                ).await;
+                )
+                .await;
             match ret {
                 // Success
                 Ok(Ok(res)) => {

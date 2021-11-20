@@ -48,9 +48,7 @@ impl<S: State> Server<S> {
         me: usize,
         max_raft_state: Option<usize>,
     ) -> Arc<Self> {
-        let (raft, apply_ch) = raft::RaftHandle::new(
-            servers, me,
-        ).await;
+        let (raft, apply_ch) = raft::RaftHandle::new(servers, me).await;
 
         let this = Arc::new(Server {
             raft,
@@ -60,11 +58,9 @@ impl<S: State> Server<S> {
             last_applied: Arc::new(Mutex::new(HashMap::new())),
             last_output: Arc::new(Mutex::new(HashMap::new())),
         });
-        let max_log_size = max_raft_state
-            .unwrap_or(usize::MAX);
+        let max_log_size = max_raft_state.unwrap_or(usize::MAX);
         this.start_listen_channel(apply_ch, max_log_size);
         this.start_rpc_server();
-
         this
     }
 
@@ -97,10 +93,6 @@ impl<S: State> Server<S> {
 
                             // not applied in state machine
                             if Some(&seq) != last_applied.get(&client) {
-                                if client < 200 {
-                                    debug!("[{:?}] start_listen_channel: apply client {}, seq {}, {:?}",
-                                        this, client, seq, command);
-                                }
                                 let mut state = this.state.lock().unwrap();
                                 let output = state.apply(command);
                                 last_applied.insert(client, seq);

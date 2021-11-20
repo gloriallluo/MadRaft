@@ -25,7 +25,6 @@ use futures::{
     stream::FuturesUnordered,
 };
 
-
 pub struct ShardKvServer {
     gid: u64,
     ctrl_ck: CtrlerClerk,
@@ -96,7 +95,7 @@ impl ShardKvServer {
                                 let d: Option<Vec<u8>>;
                                 loop {
                                     match core.call(Op::RemoveShard { cfg, shard }).await {
-                                        Reply::InstallShard { data, .. } => { d = Some(data); break; },
+                                        Reply::Shard { data, .. } => { d = Some(data); break; },
                                         Reply::Retry => continue,
                                         Reply::Ok => { d = None; skip = true; break; },
                                         _ => unreachable!(),
@@ -110,8 +109,6 @@ impl ShardKvServer {
                             if !skip {
                                 let my_core = this.sevr_ck
                                     .lock().unwrap().get(&this.gid).unwrap().clone();
-                                // debug!("[{:?}] start_check_config ({}): install shard {}",
-                                //     this, cfg, shard);
                                 my_core.call(Op::InstallShard { cfg, shard, data }).await;
                                 if let Some(core) = prev_core {
                                     match core.call(Op::ShardInstalled { cfg, shard }).await {
@@ -172,15 +169,13 @@ impl State for ShardKv {
                 }
                 self.shard2kv
                     .get(&shard)
-                    .map_or(
-                        Reply::WrongGroup,
-                        |kv| {
-                            let value = kv
-                                .get(&key)
-                                .map(|v| v.clone());
-                            Reply::Get { value }
-                        }
-                    )
+                    .map(|kv| {
+                        let value = kv
+                            .get(&key)
+                            .map(|v| v.clone());
+                        Reply::Get { value }
+                    })
+                    .unwrap()
             },
             Op::Put { key, value } => {
                 let shard = key2shard(&key);
@@ -189,13 +184,11 @@ impl State for ShardKv {
                 }
                 self.shard2kv
                     .get_mut(&shard)
-                    .map_or(
-                        Reply::WrongGroup,
-                        |kv| {
-                            kv.insert(key, value);
-                            Reply::Ok
-                        }
-                    )
+                    .map(|kv| {
+                        kv.insert(key, value);
+                        Reply::Ok
+                    })
+                    .unwrap()
             },
             Op::Append { key, value } => {
                 let shard = key2shard(&key);
@@ -204,15 +197,13 @@ impl State for ShardKv {
                 }
                 self.shard2kv
                     .get_mut(&shard)
-                    .map_or(
-                        Reply::WrongGroup,
-                        |kv| {
-                            kv
-                                .get_mut(&key)
-                                .map(|v| v.push_str(&value));
-                            Reply::Ok
-                        }
-                    )
+                    .map(|kv| {
+                        kv
+                            .get_mut(&key)
+                            .map(|v| v.push_str(&value));
+                        Reply::Ok
+                    })
+                    .unwrap()
             },
             Op::InstallShard { cfg, shard, data } => {
                 if cfg > self.shard2cfg[shard] {
@@ -233,7 +224,7 @@ impl State for ShardKv {
                         .map(|kv| kv.clone()) {
                         let data = bincode::serialize(&data).unwrap();
                         self.contains[shard] = false;
-                        Reply::InstallShard { shard, data }
+                        Reply::Shard { shard, data }
                     } else {
                         Reply::Retry
                     }
@@ -247,7 +238,7 @@ impl State for ShardKv {
                     self.shard2cfg[shard] = cfg;
                 }
                 Reply::Ok
-            }
+            },
         }
     }
 }

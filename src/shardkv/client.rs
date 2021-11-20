@@ -12,7 +12,6 @@ use std::{
 
 use super::key2shard;
 
-
 pub struct Clerk {
     /// Communicate with ShardCtrler
     ctrl_ck: CtrlerClerk,
@@ -74,9 +73,7 @@ impl Clerk {
         if !self.cores.borrow().contains_key(&shard) {
             self.renew_cores().await;
         }
-        let reply = self.cores.borrow().get(&shard).unwrap().call(args).await;
-        // debug!("get reply: {:?}", reply);
-        reply
+        self.cores.borrow().get(&shard).unwrap().call(args).await
     }
 
     async fn renew_cores(&self) {

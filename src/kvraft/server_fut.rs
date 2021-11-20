@@ -7,7 +7,6 @@ use std::{
 use futures::{Future, task::{Context, Waker}};
 use crate::kvraft::state::State;
 
-
 pub(crate) struct Output<S: State> {
     /// seq -> Output
     pub(crate) output: HashMap<usize, S::Output>,

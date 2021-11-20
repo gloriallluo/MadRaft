@@ -3,15 +3,13 @@ use madsim::{net, time::*};
 use std::{
     fmt, io,
     net::SocketAddr,
-    cmp::min,
+    cmp::{min, max},
 };
 use crate::raft::{
     args::*, log::*,
     raft_handle::{Result, RPCResult},
 };
 use serde::{Deserialize, Serialize};
-use std::cmp::max;
-
 
 type MsgSender = mpsc::UnboundedSender<ApplyMsg>;
 pub type MsgRecver = mpsc::UnboundedReceiver<ApplyMsg>;
@@ -32,7 +30,6 @@ pub enum ApplyMsg {
         index: usize,
     },
 }
-
 
 pub const SNAPSHOT_SIZE: usize = 0x8000;
 const RPC_TIMEOUT: Duration = Duration::from_millis(40);
@@ -131,8 +128,7 @@ pub struct Raft {
 impl Raft {
     pub(crate) fn start(&mut self, data: &[u8]) -> Result<Start> {
         if self.role != Role::Leader {
-            let leader = self.leader
-                .unwrap_or((self.me + 1) % self.common_sz);
+            let leader = self.leader.unwrap_or((self.me + 1) % self.common_sz);
             return Err(Error::NotLeader(leader));
         }
         // is leader
@@ -190,14 +186,14 @@ impl Raft {
                 self.snapshot_done = true;
                 self.state.next_index.fill(self.state.logs.end());
                 self.state.match_index.fill(self.state.logs.begin());
-            },
+            }
             Role::Candidate => {
                 self.state.term += 1;
                 self.state.voted_for = Some(self.me);
-            },
+            }
             Role::Follower => {
                 self.snapshot_done = true;
-            },
+            }
         }
     }
 
@@ -239,9 +235,11 @@ impl Raft {
         let net = net::NetLocalHandle::current();
         (
             async move {
-                net.call_timeout::<AppendEntryArgs, AppendEntryReply>(
-                    addr, args, RPC_TIMEOUT,
-                ).await
+                net
+                    .call_timeout::<AppendEntryArgs, AppendEntryReply>(
+                        addr, args, RPC_TIMEOUT,
+                    )
+                    .await
             },
             new_next,
         )
@@ -310,9 +308,11 @@ impl Raft {
         let net = net::NetLocalHandle::current();
         (
             async move {
-                net.call_timeout::<InstallSnapshotArgs, InstallSnapshotReply>(
-                    addr, args, RPC_TIMEOUT,
-                ).await
+                net
+                    .call_timeout::<InstallSnapshotArgs, InstallSnapshotReply>(
+                        addr, args, RPC_TIMEOUT,
+                    )
+                    .await
             },
             done,
             new_next,
@@ -358,9 +358,11 @@ impl Raft {
             let net = net.clone();
             let args = args.clone();
             rpcs.push(async move {
-                net.call_timeout::<RequestVoteArgs, RequestVoteReply>(
-                    peer, args, RPC_TIMEOUT
-                ).await
+                net
+                    .call_timeout::<RequestVoteArgs, RequestVoteReply>(
+                        peer, args, RPC_TIMEOUT,
+                    )
+                    .await
             });
         }
         rpcs
@@ -444,7 +446,7 @@ impl Raft {
 
         let success = args.prev_log_index + 1 == self.state.logs.begin()
             || self.state.logs.contains_index(args.prev_log_index)
-            && self.state.logs[args.prev_log_index].term == args.prev_log_term;
+                && self.state.logs[args.prev_log_index].term == args.prev_log_term;
 
         if args.term > self.state.term {
             self.state.term = args.term;
@@ -460,7 +462,6 @@ impl Raft {
             return AppendEntryReply { term: self.state.term, success };
         }
 
-        // TODO: improve performance
         self.state.logs.trim_from(args.prev_log_index + 1);
         self.state.logs.append(&mut args.log_entries);
         

@@ -5,7 +5,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-
 pub type ShardCtrler = Server<ShardInfo>;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -146,10 +145,7 @@ impl Config {
         }
 
         let mut re_alloc_groups: Vec<Gid> = Vec::new();
-        let mut all_groups: Vec<Gid> = self.groups
-            .iter()
-            .map(|v| *v.0)
-            .collect();
+        let mut all_groups: Vec<Gid> = self.groups.iter().map(|v| *v.0).collect();
 
         all_groups.sort();
 

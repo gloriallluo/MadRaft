@@ -132,21 +132,21 @@ impl Index<RangeFrom<usize>> for Logs {
     }
 }
 
-impl From<Vec<LogEntry>> for Logs {
-    fn from(logs: Vec<LogEntry>) -> Self {
-        if logs.is_empty() {
-            Self { offset: 0, logs }
-        } else {
-            Self { offset: logs[0].index, logs }
-        }
-    }
-}
+// impl From<Vec<LogEntry>> for Logs {
+//     fn from(logs: Vec<LogEntry>) -> Self {
+//         if logs.is_empty() {
+//             Self { offset: 0, logs }
+//         } else {
+//             Self { offset: logs[0].index, logs }
+//         }
+//     }
+// }
 
-impl Into<Vec<LogEntry>> for Logs {
-    fn into(self) -> Vec<LogEntry> {
-        self.logs
-    }
-}
+// impl Into<Vec<LogEntry>> for Logs {
+//     fn into(self) -> Vec<LogEntry> {
+//         self.logs
+//     }
+// }
 
 impl Debug for Logs {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

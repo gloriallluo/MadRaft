@@ -1,9 +1,6 @@
 use crate::raft::log::LogEntry;
 use serde::{Deserialize, Serialize};
 
-
-/// # RPC args and replies
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestVoteArgs {
     pub(crate) term: u64,

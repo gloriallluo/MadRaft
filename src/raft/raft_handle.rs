@@ -12,8 +12,6 @@ use crate::raft::{raft::*, args::*, log::*};
 use madsim::{time::*, fs, net, task, rand::{self, Rng}};
 use serde::{Deserialize, Serialize};
 
-
-/// Things stored in persistent storage:
 /// State data needs to be persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Persist {
@@ -61,11 +59,7 @@ impl RaftHandle {
             snapshot_done: true,
             log_size: 0,
         }));
-        let handle = RaftHandle {
-            me,
-            peers,
-            inner,
-        };
+        let handle = RaftHandle { me, peers, inner };
         // initialize from state persisted before a crash
         handle.restore().await.expect("Failed to restore");
         handle.start_rpc_server();
@@ -193,10 +187,10 @@ impl RaftHandle {
                                         match inner.handle_install_snapshot(reply, id, new_next) {
                                             // InstallSnapshot accepted.
                                             0 => {
-                                                if done { 
-                                                    complete = true; 
-                                                } else { 
-                                                    offset += SNAPSHOT_SIZE; 
+                                                if done {
+                                                    complete = true;
+                                                } else {
+                                                    offset += SNAPSHOT_SIZE;
                                                 }
                                                 break;
                                             },
@@ -508,7 +502,9 @@ impl RaftHandle {
     ) -> bool {
         let inner = self.inner.lock().unwrap();
         let last_included_index = last_included_index as usize;
-        inner.last_included_log.is_some() && last_included_index < inner.state.commit_index && inner.snapshot_done
+        inner.last_included_log.is_some() 
+            && last_included_index < inner.state.commit_index 
+            && inner.snapshot_done
     }
 
     fn election_timeout() -> Duration {

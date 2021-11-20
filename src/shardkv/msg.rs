@@ -37,7 +37,7 @@ pub enum Reply {
     Ok,
     Retry,
     WrongGroup,
-    InstallShard {
+    Shard {
         shard: usize,
         data: Vec<u8>,
     },
