@@ -1,15 +1,17 @@
-use crate::{kvraft::{msg::*, server_fut::*, state::*}, raft};
+use crate::{
+    kvraft::{msg::*, server_fut::*, state::*},
+    raft,
+};
+use futures::{channel::mpsc::UnboundedReceiver, StreamExt};
 use madsim::{net, task, time};
 use serde::{Deserialize, Serialize};
-use futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use std::{
+    collections::HashMap,
     fmt::{self, Debug},
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
-    collections::HashMap,
 };
-
 
 const SERVER_TIMEOUT: Duration = Duration::from_millis(400);
 
@@ -21,8 +23,11 @@ struct ServerCommand<S: State> {
 }
 
 /// (state, last applied seq, last output)
-type Snapshot<S> = (S, HashMap<usize, usize>, HashMap<usize, <S as State>::Output>);
-
+type Snapshot<S> = (
+    S,
+    HashMap<usize, usize>,
+    HashMap<usize, <S as State>::Output>,
+);
 
 pub struct Server<S: State> {
     raft: raft::RaftHandle,
@@ -84,7 +89,11 @@ impl<S: State> Server<S> {
                 match cmd {
                     raft::ApplyMsg::Command { data, index, .. } => {
                         let cmd: ServerCommand<S> = bincode::deserialize(&data).unwrap();
-                        let ServerCommand { client, seq, command } = cmd;
+                        let ServerCommand {
+                            client,
+                            seq,
+                            command,
+                        } = cmd;
                         let mut snapshot = None;
                         {
                             let mut kv_output = this.res.lock().unwrap();
@@ -99,9 +108,14 @@ impl<S: State> Server<S> {
                                 last_output.insert(client, output.clone());
                                 kv_output.output.insert(seq, output);
                                 snapshot = if this.raft.log_size() > max_log_size / 2 {
-                                    Some(bincode::serialize(
-                                        &(&*state, &*last_applied, &*last_output)
-                                    ).unwrap())
+                                    Some(
+                                        bincode::serialize(&(
+                                            &*state,
+                                            &*last_applied,
+                                            &*last_output,
+                                        ))
+                                        .unwrap(),
+                                    )
                                 } else {
                                     None
                                 };
@@ -116,18 +130,23 @@ impl<S: State> Server<S> {
                         if let Some(snapshot) = snapshot {
                             this.raft.snapshot(index, &snapshot).await.unwrap();
                         }
-                    },
+                    }
                     raft::ApplyMsg::Snapshot { data, index, term } => {
-                        if this.raft.cond_install_snapshot(term, index as u64, &data).await {
+                        if this
+                            .raft
+                            .cond_install_snapshot(term, index as u64, &data)
+                            .await
+                        {
                             let snapshot: Snapshot<S> = bincode::deserialize(&data).unwrap();
                             *this.state.lock().unwrap() = snapshot.0;
                             *this.last_applied.lock().unwrap() = snapshot.1;
                             *this.last_output.lock().unwrap() = snapshot.2;
                         }
-                    },
+                    }
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     /// The current term of this peer.
@@ -152,30 +171,40 @@ impl<S: State> Server<S> {
         }
 
         if Some(&seq) == self.last_applied.lock().unwrap().get(&client) {
-            let res = self.last_output
-                .lock().unwrap().get(&client).unwrap().clone();
+            let res = self
+                .last_output
+                .lock()
+                .unwrap()
+                .get(&client)
+                .unwrap()
+                .clone();
             return Ok(res);
         }
 
         if self.raft.is_leader() {
-            let cmd: ServerCommand<S> = ServerCommand { client, seq, command: cmd };
+            let cmd: ServerCommand<S> = ServerCommand {
+                client,
+                seq,
+                command: cmd,
+            };
             match self.raft.start(&bincode::serialize(&cmd).unwrap()).await {
                 Ok(_) => {
-                    let f = ServerFuture::new(seq,  self.res.clone());
+                    let f = ServerFuture::new(seq, self.res.clone());
                     time::timeout(SERVER_TIMEOUT, f)
                         .await
                         .map_err(|_| Error::Timeout)
-                },
+                }
                 Err(e) => match e {
                     raft::Error::NotLeader(hint) => Err(Error::NotLeader { hint }),
                     raft::Error::IO(_) => unreachable!(),
                 },
             }
         } else {
-            Err(Error::NotLeader { hint: self.raft.leader() })
+            Err(Error::NotLeader {
+                hint: self.raft.leader(),
+            })
         }
     }
 }
 
 pub type KvServer = Server<Kv>;
-

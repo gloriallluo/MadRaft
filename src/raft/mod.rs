@@ -1,7 +1,8 @@
-mod raft;
-mod raft_handle;
 mod args;
 mod log;
+#[allow(clippy::module_inception)]
+mod raft;
+mod raft_handle;
 #[cfg(test)]
 mod tester;
 #[cfg(test)]

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::shard_ctrler::msg::ConfigId;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
@@ -31,14 +31,9 @@ pub enum Op {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Reply {
-    Get {
-        value: Option<String>,
-    },
+    Get { value: Option<String> },
     Ok,
     Retry,
     WrongGroup,
-    Shard {
-        shard: usize,
-        data: Vec<u8>,
-    },
+    Shard { shard: usize, data: Vec<u8> },
 }

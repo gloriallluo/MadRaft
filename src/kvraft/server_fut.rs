@@ -1,11 +1,14 @@
+use crate::kvraft::state::State;
+use futures::{
+    task::{Context, Waker},
+    Future,
+};
 use std::{
-    task::Poll,
-    sync::{Arc, Mutex},
     collections::HashMap,
     pin::Pin,
+    sync::{Arc, Mutex},
+    task::Poll,
 };
-use futures::{Future, task::{Context, Waker}};
-use crate::kvraft::state::State;
 
 pub(crate) struct Output<S: State> {
     /// seq -> Output
@@ -29,10 +32,7 @@ pub(crate) struct ServerFuture<S: State> {
 }
 
 impl<S: State> ServerFuture<S> {
-    pub(crate) fn new(
-        seq: usize,
-        res: Arc<Mutex<Output<S>>>,
-    ) -> Self {
+    pub(crate) fn new(seq: usize, res: Arc<Mutex<Output<S>>>) -> Self {
         Self { seq, res }
     }
 }

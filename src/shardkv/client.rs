@@ -1,14 +1,7 @@
 use crate::{
-    shardkv::msg::*,
-    kvraft::client::ClerkCore,
-    shard_ctrler::client::Clerk as CtrlerClerk,
+    kvraft::client::ClerkCore, shard_ctrler::client::Clerk as CtrlerClerk, shardkv::msg::*,
 };
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    cell::RefCell,
-    collections::HashMap,
-};
+use std::{cell::RefCell, collections::HashMap, net::SocketAddr, sync::Arc};
 
 use super::key2shard;
 
@@ -31,7 +24,7 @@ impl Clerk {
         loop {
             let key = key.clone();
             match self.call(Op::Get { key }).await {
-                Reply::Get { value } => return value.unwrap_or("".to_string()),
+                Reply::Get { value } => return value.unwrap_or_default(),
                 Reply::WrongGroup => self.renew_cores().await,
                 _ => unreachable!(),
             };
@@ -73,27 +66,23 @@ impl Clerk {
         if !self.cores.borrow().contains_key(&shard) {
             self.renew_cores().await;
         }
-        self.cores.borrow().get(&shard).unwrap().call(args).await
+        let core = self.cores.borrow().get(&shard).cloned().unwrap();
+        core.call(args).await
     }
 
     async fn renew_cores(&self) {
         self.cores.borrow_mut().clear();
         let config = self.ctrl_ck.query().await;
-        let gid2core = config.groups
+        let gid2core = config
+            .groups
             .into_iter()
             .fold(HashMap::new(), |mut map, (gid, servers)| {
-                map.insert(
-                    gid,
-                    Arc::new(ClerkCore::<Op, Reply>::new(servers)),
-                );
+                map.insert(gid, Arc::new(ClerkCore::<Op, Reply>::new(servers)));
                 map
             });
-        config.shards
-            .iter()
-            .enumerate()
-            .for_each(|(shard, gid)| {
-                let core = gid2core.get(gid).unwrap().clone();
-                self.cores.borrow_mut().insert(shard, core);
-            })
+        config.shards.iter().enumerate().for_each(|(shard, gid)| {
+            let core = gid2core.get(gid).unwrap().clone();
+            self.cores.borrow_mut().insert(shard, core);
+        })
     }
 }

@@ -1,15 +1,13 @@
-use std::collections::HashMap;
+use crate::kvraft::msg::*;
 use madsim::net;
 use serde::{Deserialize, Serialize};
-use crate::kvraft::msg::*;
-
+use std::collections::HashMap;
 
 pub trait State: net::Message + Default {
     type Command: net::Message + Clone;
     type Output: net::Message + Clone;
     fn apply(&mut self, cmd: Self::Command) -> Self::Output;
 }
-
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Kv {
@@ -31,16 +29,11 @@ impl State for Kv {
 
 impl Kv {
     fn get(&self, key: String) -> String {
-        self.data
-            .get(&key)
-            .map_or("", |v| v.as_str())
-            .to_string()
+        self.data.get(&key).map_or("", |v| v.as_str()).to_string()
     }
 
     fn put(&mut self, key: String, value: String) -> String {
-        self.data
-            .insert(key, value)
-            .unwrap_or("".to_string())
+        self.data.insert(key, value).unwrap_or_default()
     }
 
     fn append(&mut self, key: String, value: String) -> String {

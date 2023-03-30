@@ -1,16 +1,19 @@
-use std::{fmt, io, net::SocketAddr, sync::{Arc, Mutex}};
+use crate::raft::{args::*, log::*, raft::*};
 use futures::{
-    FutureExt,
-    StreamExt,
-    channel::mpsc,
-    pin_mut,
-    select_biased,
-    join,
-    stream::FuturesUnordered,
+    channel::mpsc, join, pin_mut, select_biased, stream::FuturesUnordered, FutureExt, StreamExt,
 };
-use crate::raft::{raft::*, args::*, log::*};
-use madsim::{time::*, fs, net, task, rand::{self, Rng}};
+use madsim::{
+    fs, net,
+    rand::{self, Rng},
+    task,
+    time::*,
+};
 use serde::{Deserialize, Serialize};
+use std::{
+    fmt, io,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 /// State data needs to be persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +34,6 @@ struct Snapshot {
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type RPCResult<T> = std::io::Result<T>;
-
 
 /// # RaftHandle
 
@@ -109,7 +111,7 @@ impl RaftHandle {
         let apply_task = self.apply().fuse();
         pin_mut!(apply_task);
         select_biased! {
-            _ = heartbeat_tasks.select_next_some() => return,
+            _ = heartbeat_tasks.select_next_some() => {}
             _ = apply_task => unreachable!(),
             complete => unreachable!(),
         }
@@ -127,7 +129,9 @@ impl RaftHandle {
                     // Try until logs match
                     let (rpc, new_next) = {
                         let inner = self.inner.lock().unwrap();
-                        if inner.role != Role::Leader { return; }
+                        if inner.role != Role::Leader {
+                            return;
+                        }
                         if inner.state.next_index[id] < inner.state.logs.begin() {
                             append_entry = false;
                             continue;
@@ -164,12 +168,16 @@ impl RaftHandle {
                             },
                         }
                     } // loop select
-                    if complete { break; }
+                    if complete {
+                        break;
+                    }
                 } else {
                     // Send snapshot to follower.
                     let (rpc, done, new_next) = {
                         let inner = self.inner.lock().unwrap();
-                        if inner.role != Role::Leader { return; }
+                        if inner.role != Role::Leader {
+                            return;
+                        }
                         inner.send_install_snapshot(self.peers[id], offset)
                     };
 
@@ -205,10 +213,12 @@ impl RaftHandle {
                             },
                         }
                     } // loop select
-                    if complete { break; }
+                    if complete {
+                        break;
+                    }
                 }
             } // loop retry
-            // Heartbeat interval
+              // Heartbeat interval
             sleep(Self::heartbeat_timeout()).await;
         } // loop heartbeat
     }
@@ -236,25 +246,28 @@ impl RaftHandle {
         let timer = self.candidate_timer().fuse();
         pin_mut!(vote_request, timer);
         select_biased! {
-            _ = vote_request => return,
-            _ = timer => return,
+            _ = vote_request => {}
+            _ = timer => {}
         }
     }
 
     async fn vote_request(&self) {
         // send RequestVote
-        let peer_without_me = self.peers
+        let peer_without_me = self
+            .peers
             .iter()
             .enumerate()
             .filter(|(i, _)| i != &self.me)
             .map(|(_, &addr)| addr)
-            .collect();
+            .collect::<Vec<_>>();
         let mut rpcs = {
             let inner = self.inner.lock().unwrap();
             inner.send_request_vote(&peer_without_me)
         };
 
-        if self.role() != Role::Candidate { return; }
+        if self.role() != Role::Candidate {
+            return;
+        }
 
         // collect votes
         let majority = (self.peers.len() + 1) >> 1;
@@ -295,7 +308,7 @@ impl RaftHandle {
         let timer = self.follower_timer().fuse();
         pin_mut!(timer);
         select_biased! {
-            _ = timer => return,
+            _ = timer => {}
         }
     }
 
@@ -368,11 +381,11 @@ impl RaftHandle {
             };
             let snapshot = Snapshot {
                 snapshot: inner.snapshot.clone(),
-                last_included_log: inner.last_included_log
-                    .as_ref()
-                    .map(|log| {
-                        LogEntry { term: log.term, index: log.index, data: vec![] }
-                    }),
+                last_included_log: inner.last_included_log.as_ref().map(|log| LogEntry {
+                    term: log.term,
+                    index: log.index,
+                    data: vec![],
+                }),
             };
             let persist = bincode::serialize(&persist).unwrap();
             let snapshot = if snapshot.last_included_log.is_some() {
@@ -399,7 +412,7 @@ impl RaftHandle {
             }
             io::Result::<()>::Ok(())
         };
-        
+
         let (r1, r2) = join!(f1, f2);
         r1.and(r2)
     }
@@ -415,7 +428,7 @@ impl RaftHandle {
                     inner.state.voted_for = persist.voted_for;
                     inner.state.logs = persist.logs;
                     Ok(())
-                },
+                }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
                 Err(e) => Err(e),
             }
@@ -429,12 +442,12 @@ impl RaftHandle {
                     inner.snapshot = snapshot.snapshot;
                     inner.last_included_log = snapshot.last_included_log;
                     Ok(())
-                },
+                }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
                 Err(e) => Err(e),
             }
         };
-        
+
         let (r1, r2) = join!(f1, f2);
         r1.and(r2)
     }
@@ -502,8 +515,8 @@ impl RaftHandle {
     ) -> bool {
         let inner = self.inner.lock().unwrap();
         let last_included_index = last_included_index as usize;
-        inner.last_included_log.is_some() 
-            && last_included_index < inner.state.commit_index 
+        inner.last_included_log.is_some()
+            && last_included_index < inner.state.commit_index
             && inner.snapshot_done
     }
 

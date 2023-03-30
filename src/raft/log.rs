@@ -1,20 +1,14 @@
-use std::ops::{Range, Index, IndexMut, RangeFrom};
-use std::fmt::{self, Debug, Formatter};
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Debug, Formatter};
+use std::ops::{Index, IndexMut, Range, RangeFrom};
 
 /// # LogEntry
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct LogEntry {
     pub(crate) term: u64,
     pub(crate) index: usize,
     pub(crate) data: Vec<u8>,
-}
-
-impl Default for LogEntry {
-    fn default() -> Self {
-        Self { term: 0, index: 0, data: vec![] }
-    }
 }
 
 impl Debug for LogEntry {
@@ -22,7 +16,6 @@ impl Debug for LogEntry {
         write!(f, "(term: {}, index: {})", self.term, self.index)
     }
 }
-
 
 /// # Logs
 
@@ -72,7 +65,9 @@ impl Logs {
     /// trim logs to `index`.
     /// if `index` is not contained in logs, then discard all logs.
     pub fn trim_to(&mut self, index: usize) {
-        if index == 0 { return; }
+        if index == 0 {
+            return;
+        }
         if self.contains_index(index - 1) {
             let new_offset = index;
             let index = index - self.offset;
@@ -94,7 +89,10 @@ impl Logs {
 impl Default for Logs {
     fn default() -> Self {
         // Add an empty log entry at start, to be consistent with tester.
-        Self { offset: 0, logs: vec![LogEntry::default()] }
+        Self {
+            offset: 0,
+            logs: vec![LogEntry::default()],
+        }
     }
 }
 

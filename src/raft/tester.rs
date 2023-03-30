@@ -230,7 +230,7 @@ impl RaftTester {
                         index = Some(start.index);
                         break;
                     }
-                    Err(_) =>  {},
+                    Err(_) => {}
                 }
             }
 
@@ -304,8 +304,8 @@ impl RaftTester {
             while let Some(cmd) = apply_recver.next().await {
                 match cmd {
                     ApplyMsg::Command { data, index } => {
-                        let entry = bincode::deserialize(&data)
-                            .expect("committed command is not an entry");
+                        let entry =
+                            bincode::deserialize(&data).expect("committed command is not an entry");
                         storage.push_and_check(i, index as u64, entry);
                         if snapshot && (index + 1) % SNAPSHOT_INTERVAL == 0 {
                             raft.snapshot(index, &data).await.unwrap();
@@ -390,8 +390,12 @@ impl StorageHandle {
         }
         let log = &mut logs[i];
         if index as usize > log.len() {
-            panic!("server {} apply out of order {} (log length {})", 
-                i, index, log.len());
+            panic!(
+                "server {} apply out of order {} (log length {})",
+                i,
+                index,
+                log.len()
+            );
         } else if index as usize == log.len() {
             log.push(Some(entry));
         }

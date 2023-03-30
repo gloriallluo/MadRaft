@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use crate::{
-    shard_ctrler::{msg::*, N_SHARDS},
     kvraft::{server::Server, state::State},
+    shard_ctrler::{msg::*, N_SHARDS},
 };
 use serde::{Deserialize, Serialize};
+use std::{cmp::Ordering, collections::HashMap};
 
 pub type ShardCtrler = Server<ShardInfo>;
 
@@ -44,39 +44,35 @@ impl State for ShardInfo {
                 if num < self.configs.len() as ConfigId {
                     Some(self.configs[num as usize].clone())
                 } else {
-                    self.configs.last().map(|v| v.clone())
+                    self.configs.last().cloned()
                 }
-            },
+            }
             Op::Move { shard, gid } => {
                 let mut new_config = self.new_config();
                 new_config.shards[shard] = gid;
                 self.configs.push(new_config.clone());
                 Some(new_config)
-            },
+            }
             Op::Join { groups } => {
                 let mut new_config = self.new_config();
                 let mut ng = Vec::new();
-                groups
-                    .into_iter()
-                    .for_each(|g| {
-                        ng.push(g.0);
-                        new_config.groups.insert(g.0, g.1);
-                    });
+                groups.into_iter().for_each(|g| {
+                    ng.push(g.0);
+                    new_config.groups.insert(g.0, g.1);
+                });
                 new_config.balance_join(ng);
                 self.configs.push(new_config.clone());
                 Some(new_config)
-            },
+            }
             Op::Leave { gids } => {
                 let mut new_config = self.new_config();
-                gids
-                    .iter()
-                    .for_each(|g| {
-                        new_config.groups.remove(g);
-                    });
+                gids.iter().for_each(|g| {
+                    new_config.groups.remove(g);
+                });
                 new_config.balance_leave(gids);
                 self.configs.push(new_config.clone());
                 Some(new_config)
-            },
+            }
         }
     }
 }
@@ -100,25 +96,22 @@ impl Config {
                 continue;
             }
             let &cnt = count.get(gid).unwrap_or(&0usize);
-            if cnt + 1 > opt + 1 {
-                re_alloc_shards.push(shard);
-            } else if cnt + 1 == opt + 1 {
-                re_alloc_shards.insert(0, shard);
+            match cnt.cmp(&opt) {
+                Ordering::Greater => re_alloc_shards.push(shard),
+                Ordering::Equal => re_alloc_shards.insert(0, shard),
+                _ => {}
             }
             count.insert(gid, cnt + 1);
         }
 
         new_groups.sort();
 
-        new_groups
-            .iter()
-            .enumerate()
-            .for_each(|(i, gid)| {
-                let c = if i < r { opt + 1 } else { opt };
-                for _ in 0..c {
-                    self.shards[re_alloc_shards.pop().unwrap()] = *gid;
-                }
-            });
+        new_groups.iter().enumerate().for_each(|(i, gid)| {
+            let c = if i < r { opt + 1 } else { opt };
+            for _ in 0..c {
+                self.shards[re_alloc_shards.pop().unwrap()] = *gid;
+            }
+        });
     }
 
     /// Re-balance after leave.
@@ -159,10 +152,8 @@ impl Config {
             }
         }
 
-        re_alloc_shards
-            .iter()
-            .for_each(|&shard| {
-                self.shards[shard] = re_alloc_groups.pop().unwrap();
-            });
+        re_alloc_shards.iter().for_each(|&shard| {
+            self.shards[shard] = re_alloc_groups.pop().unwrap();
+        });
     }
 }
