@@ -7,7 +7,7 @@ use std::ops::{Index, IndexMut, Range, RangeFrom};
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct LogEntry {
     pub(crate) term: u64,
-    pub(crate) index: usize,
+    pub(crate) index: u64,
     pub(crate) data: Vec<u8>,
 }
 
@@ -21,7 +21,7 @@ impl Debug for LogEntry {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Logs {
-    offset: usize,
+    offset: u64,
     logs: Vec<LogEntry>,
 }
 
@@ -30,19 +30,19 @@ impl Logs {
         self.logs.push(log);
     }
 
-    pub fn len(&self) -> usize {
-        self.logs.len()
+    pub fn len(&self) -> u64 {
+        self.logs.len() as u64
     }
 
-    pub fn begin(&self) -> usize {
+    pub fn begin(&self) -> u64 {
         self.offset
     }
 
-    pub fn end(&self) -> usize {
-        self.offset + self.logs.len()
+    pub fn end(&self) -> u64 {
+        self.offset + self.logs.len() as u64
     }
 
-    pub fn contains_index(&self, index: usize) -> bool {
+    pub fn contains_index(&self, index: u64) -> bool {
         (self.offset..self.offset + self.len()).contains(&index)
     }
 
@@ -55,23 +55,23 @@ impl Logs {
     }
 
     /// trim logs from `index`.
-    pub fn trim_from(&mut self, index: usize) {
+    pub fn trim_from(&mut self, index: u64) {
         if self.contains_index(index) {
             let index = index - self.offset;
-            self.logs.drain(index..);
+            self.logs.drain(index as usize..);
         }
     }
 
     /// trim logs to `index`.
     /// if `index` is not contained in logs, then discard all logs.
-    pub fn trim_to(&mut self, index: usize) {
+    pub fn trim_to(&mut self, index: u64) {
         if index == 0 {
             return;
         }
         if self.contains_index(index - 1) {
             let new_offset = index;
             let index = index - self.offset;
-            self.logs.drain(..index);
+            self.logs.drain(..index as usize);
             self.offset = new_offset;
         } else {
             self.logs.clear();
@@ -96,55 +96,39 @@ impl Default for Logs {
     }
 }
 
-impl Index<usize> for Logs {
+impl Index<u64> for Logs {
     type Output = LogEntry;
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.logs[index - self.offset]
+    fn index(&self, index: u64) -> &Self::Output {
+        &self.logs[(index - self.offset) as usize]
     }
 }
 
-impl IndexMut<usize> for Logs {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.logs[index - self.offset]
+impl IndexMut<u64> for Logs {
+    fn index_mut(&mut self, index: u64) -> &mut Self::Output {
+        &mut self.logs[(index - self.offset) as usize]
     }
 }
 
-impl Index<Range<usize>> for Logs {
+impl Index<Range<u64>> for Logs {
     type Output = [LogEntry];
-    fn index(&self, index: Range<usize>) -> &Self::Output {
+    fn index(&self, index: Range<u64>) -> &Self::Output {
         let range = Range {
             start: index.start - self.offset,
             end: index.end - self.offset,
         };
-        &self.logs[range]
+        &self.logs[range.start as usize..range.end as usize]
     }
 }
 
-impl Index<RangeFrom<usize>> for Logs {
+impl Index<RangeFrom<u64>> for Logs {
     type Output = [LogEntry];
-    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+    fn index(&self, index: RangeFrom<u64>) -> &Self::Output {
         let range = RangeFrom {
             start: index.start - self.offset,
         };
-        &self.logs[range]
+        &self.logs[range.start as usize..]
     }
 }
-
-// impl From<Vec<LogEntry>> for Logs {
-//     fn from(logs: Vec<LogEntry>) -> Self {
-//         if logs.is_empty() {
-//             Self { offset: 0, logs }
-//         } else {
-//             Self { offset: logs[0].index, logs }
-//         }
-//     }
-// }
-
-// impl Into<Vec<LogEntry>> for Logs {
-//     fn into(self) -> Vec<LogEntry> {
-//         self.logs
-//     }
-// }
 
 impl Debug for Logs {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

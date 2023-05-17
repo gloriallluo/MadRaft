@@ -22,13 +22,13 @@ pub type MsgRecver = mpsc::UnboundedReceiver<ApplyMsg>;
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
-        index: usize,
+        index: u64,
     },
     // For 2D:
     Snapshot {
         data: Vec<u8>,
         term: u64,
-        index: usize,
+        index: u64,
     },
 }
 
@@ -40,7 +40,7 @@ const RPC_TIMEOUT: Duration = Duration::from_millis(40);
 #[derive(Debug)]
 pub struct Start {
     /// The index that the command will appear at if it's ever committed.
-    pub index: usize,
+    pub index: u64,
     /// The current term.
     pub term: u64,
 }
@@ -64,12 +64,12 @@ pub struct State {
     pub(crate) logs: Logs,
 
     /// volatile:
-    pub(crate) commit_index: usize,
-    pub(crate) applied_index: usize,
+    pub(crate) commit_index: u64,
+    pub(crate) applied_index: u64,
 
     /// leader only:
-    pub(crate) next_index: Vec<usize>,
-    pub(crate) match_index: Vec<usize>,
+    pub(crate) next_index: Vec<u64>,
+    pub(crate) match_index: Vec<u64>,
 }
 
 impl State {
@@ -132,7 +132,7 @@ impl Raft {
         }
         // is leader
         let term = self.state.term;
-        let index = self.state.logs.end();
+        let index = self.state.logs.end() as u64;
         self.state.logs.push(LogEntry {
             term,
             index,
@@ -142,7 +142,7 @@ impl Raft {
     }
 
     pub(crate) fn apply(&mut self) {
-        if self.state.commit_index < self.state.logs.begin() {
+        if self.state.commit_index < self.state.logs.begin() as u64 {
             return;
         }
 
@@ -170,7 +170,7 @@ impl Raft {
     }
 
     /// returns `last_log_term` and `last_log_index`
-    fn last_log_info(&self) -> (u64, usize) {
+    fn last_log_info(&self) -> (u64, u64) {
         if let Some(log) = self.state.logs.last() {
             (log.term, log.index)
         } else if self.last_included_log.is_some() {
@@ -219,7 +219,7 @@ impl Raft {
         &self,
         id: usize,
         addr: SocketAddr,
-    ) -> (impl Future<Output = RPCResult<AppendEntryReply>>, usize) {
+    ) -> (impl Future<Output = RPCResult<AppendEntryReply>>, u64) {
         let new_next = self.state.logs.end();
         let args = {
             let prev_log_index = max(self.state.next_index[id], 1) - 1;
@@ -259,8 +259,8 @@ impl Raft {
         &mut self,
         id: usize,
         reply: AppendEntryReply,
-        new_next: usize,
-        step: usize,
+        new_next: u64,
+        step: u64,
     ) -> i32 {
         if reply.success {
             // log entries match, update `next_index` and `match_index`.
@@ -295,7 +295,7 @@ impl Raft {
     ) -> (
         impl Future<Output = RPCResult<InstallSnapshotReply>>,
         bool,
-        usize,
+        u64,
     ) {
         let new_offset = min(offset + SNAPSHOT_SIZE, self.snapshot.len());
         let done = new_offset == self.snapshot.len();
@@ -337,7 +337,7 @@ impl Raft {
         &mut self,
         reply: InstallSnapshotReply,
         id: usize,
-        new_next: usize,
+        new_next: u64,
     ) -> i32 {
         if reply.term <= self.state.term {
             self.state.next_index[id] = new_next;

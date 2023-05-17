@@ -121,7 +121,7 @@ impl RaftHandle {
     async fn heartbeat(&self, id: usize) {
         loop {
             // Send heartbeat messages to follower every 50 milliseconds.
-            let mut step: usize = 1;
+            let mut step: u64 = 1;
             let mut offset: usize = 0;
             let mut append_entry = true;
             loop {
@@ -355,7 +355,7 @@ impl RaftHandle {
     /// The service says it has created a snapshot that has all info up to and
     /// including index. This means the service no longer needs the log through
     /// (and include) that index. Raft should now trim its log as much as possible.
-    pub async fn snapshot(&self, index: usize, snapshot: &[u8]) -> Result<()> {
+    pub async fn snapshot(&self, index: u64, snapshot: &[u8]) -> Result<()> {
         {
             let mut inner = self.inner.lock().unwrap();
             assert!(index < inner.state.commit_index);
@@ -514,7 +514,6 @@ impl RaftHandle {
         _snapshot: &[u8],
     ) -> bool {
         let inner = self.inner.lock().unwrap();
-        let last_included_index = last_included_index as usize;
         inner.last_included_log.is_some()
             && last_included_index < inner.state.commit_index
             && inner.snapshot_done
