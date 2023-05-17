@@ -37,12 +37,10 @@ impl Kv {
     }
 
     fn append(&mut self, key: String, value: String) -> String {
-        self.data
-            .get_mut(&key)
-            .map_or("", |v| {
-                v.push_str(&value);
-                v.as_str()
-            })
-            .to_string()
+        let v = self.data
+            .entry(key)
+            .or_default();
+        v.push_str(&value);
+        v.to_owned()
     }
 }

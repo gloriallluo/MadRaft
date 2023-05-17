@@ -7,6 +7,7 @@ use madsim::{
     time::{self, Instant},
     Handle,
 };
+use ::rand::distributions::Alphanumeric;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -435,4 +436,12 @@ impl StorageHandle {
         let logs = self.logs.lock().unwrap();
         logs.iter().map(|log| log.len() - 1).max().unwrap()
     }
+}
+
+pub fn rand_string(len: usize) -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
 }
