@@ -37,9 +37,7 @@ impl Kv {
     }
 
     fn append(&mut self, key: String, value: String) -> String {
-        let v = self.data
-            .entry(key)
-            .or_default();
+        let v = self.data.entry(key).or_default();
         v.push_str(&value);
         v.to_owned()
     }
