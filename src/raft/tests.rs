@@ -139,7 +139,7 @@ async fn rpc_bytes_2b() {
     info!("Test (2B): RPC byte count");
 
     t.one(Entry::X(99), servers, false).await;
-    let bytes0 = 0; // TODO bytes metrics
+    let rpc0 = t.rpc_total();
 
     let iters = 10;
     let mut sent = 0;
@@ -150,9 +150,9 @@ async fn rpc_bytes_2b() {
         sent += 5000;
     }
 
-    let bytes1 = 100;
-    let got = bytes1 - bytes0;
-    let expected = servers * sent;
+    let rpc1 = t.rpc_total();
+    let got = (rpc1 - rpc0) * 5000;
+    let expected = (servers * sent) as u64;
     assert!(
         got <= expected + 50000,
         "too many RPC bytes; got {}, expected {}",

@@ -134,7 +134,7 @@ impl<S: State> Server<S> {
                     raft::ApplyMsg::Snapshot { data, index, term } => {
                         if this
                             .raft
-                            .cond_install_snapshot(term, index as u64, &data)
+                            .cond_install_snapshot(term, index, &data)
                             .await
                         {
                             let snapshot: Snapshot<S> = bincode::deserialize(&data).unwrap();

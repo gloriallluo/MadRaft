@@ -1,5 +1,6 @@
 use super::raft::*;
 use super::raft_handle::*;
+use ::rand::distributions::Alphanumeric;
 use futures::StreamExt;
 use log::*;
 use madsim::{
@@ -7,7 +8,6 @@ use madsim::{
     time::{self, Instant},
     Handle,
 };
-use ::rand::distributions::Alphanumeric;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,

@@ -132,7 +132,7 @@ impl Raft {
         }
         // is leader
         let term = self.state.term;
-        let index = self.state.logs.end() as u64;
+        let index = self.state.logs.end();
         self.state.logs.push(LogEntry {
             term,
             index,
@@ -142,7 +142,7 @@ impl Raft {
     }
 
     pub(crate) fn apply(&mut self) {
-        if self.state.commit_index < self.state.logs.begin() as u64 {
+        if self.state.commit_index < self.state.logs.begin() {
             return;
         }
 
