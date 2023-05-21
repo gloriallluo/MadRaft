@@ -12,10 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt, io,
     net::SocketAddr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 
 /// State data needs to be persisted.
@@ -45,7 +42,7 @@ pub struct RaftHandle {
     me: usize,
     peers: Vec<SocketAddr>,
     inner: Arc<Mutex<Raft>>,
-    unhandle: Arc<AtomicBool>,
+    // unhandle: Arc<AtomicBool>,
 }
 
 impl RaftHandle {
@@ -65,12 +62,12 @@ impl RaftHandle {
             snapshot_done: true,
             log_size: 0,
         }));
-        let unhandle = Arc::new(AtomicBool::new(false));
+        // let unhandle = Arc::new(AtomicBool::new(false));
         let handle = RaftHandle {
             me,
             peers,
             inner,
-            unhandle,
+            // unhandle,
         };
         // initialize from state persisted before a crash
         handle.restore().await.expect("Failed to restore");
@@ -89,13 +86,13 @@ impl RaftHandle {
     /// Raft log, since the leader may fail or lose an election.
     pub async fn start(&self, cmd: &[u8]) -> Result<Start> {
         let mut raft = self.inner.lock().unwrap();
-        self.unhandle.store(true, Ordering::Release);
+        // self.unhandle.store(true, Ordering::Release);
         raft.start(cmd)
     }
 
     async fn run(&self) {
         loop {
-            self.unhandle.store(false, Ordering::Release);
+            // self.unhandle.store(false, Ordering::Release);
             self.inner.lock().unwrap().reset_raft();
             match self.role() {
                 Role::Leader => self.run_leader().await,
@@ -112,7 +109,7 @@ impl RaftHandle {
     /// ## leader functions
 
     async fn run_leader(&self) {
-        warn!("heiheihei new leader {self:?}");
+        info!("heiheihei new leader {self:?}");
         let mut heartbeat_tasks = FuturesUnordered::new();
         self.peers
             .iter()
@@ -225,20 +222,20 @@ impl RaftHandle {
             } // loop retry
 
             // Heartbeat interval
-            // sleep(Self::heartbeat_timeout()).await;
-            for _ in 0..10 {
-                if self.unhandle.load(Ordering::Acquire) {
-                    self.unhandle.store(false, Ordering::Relaxed);
-                    break;
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
+            sleep(Self::heartbeat_timeout()).await;
+            // for _ in 0..10 {
+            //     if self.unhandle.load(Ordering::Acquire) {
+            //         self.unhandle.store(false, Ordering::Relaxed);
+            //         break;
+            //     }
+            //     sleep(Duration::from_millis(10)).await;
+            // }
         } // loop heartbeat
     }
 
     async fn apply(&self) {
         loop {
-            self.unhandle.store(false, Ordering::Release);
+            // self.unhandle.store(false, Ordering::Release);
             {
                 // update `commit_index` due to `match_index`, and apply logs.
                 let mut inner = self.inner.lock().unwrap();
