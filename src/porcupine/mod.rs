@@ -1,4 +1,4 @@
-//! A tool checking linearizability.
+//! A tool to check linearizability.
 #![cfg(test)]
 
 mod checker;
@@ -11,13 +11,15 @@ use checker::LinearizationInfo;
 use model::{Entry, Model, Operation};
 
 /// Linearizability check result.
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub(crate) enum CheckResult {
-    /// Timeout
-    Unknown,
     /// Ok
-    Ok,
+    Ok = 0,
+    /// Timeout
+    Unknown = 1,
     /// Unlinearizable
-    Illegal,
+    Illegal = 2,
 }
 
 /// If this operation times out, then a false positive is possible.
@@ -29,8 +31,8 @@ pub(crate) async fn check_operations_timeout<M: Model>(
     res
 }
 
-#[allow(dead_code)] // TODO support verbose
 /// If this operation times out, then a false positive is possible.
+#[allow(dead_code)] // TODO support verbose
 pub(crate) async fn check_operation_verbose<M: Model>(
     history: Vec<Operation<M>>,
     timeout: Duration,
