@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt, io,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 /// State data needs to be persisted.
@@ -42,6 +45,7 @@ pub struct RaftHandle {
     me: usize,
     peers: Vec<SocketAddr>,
     inner: Arc<Mutex<Raft>>,
+    unhandle: Arc<AtomicBool>,
 }
 
 impl RaftHandle {
@@ -61,7 +65,13 @@ impl RaftHandle {
             snapshot_done: true,
             log_size: 0,
         }));
-        let handle = RaftHandle { me, peers, inner };
+        let unhandle = Arc::new(AtomicBool::new(false));
+        let handle = RaftHandle {
+            me,
+            peers,
+            inner,
+            unhandle,
+        };
         // initialize from state persisted before a crash
         handle.restore().await.expect("Failed to restore");
         handle.start_rpc_server();
@@ -79,11 +89,13 @@ impl RaftHandle {
     /// Raft log, since the leader may fail or lose an election.
     pub async fn start(&self, cmd: &[u8]) -> Result<Start> {
         let mut raft = self.inner.lock().unwrap();
+        self.unhandle.store(true, Ordering::Release);
         raft.start(cmd)
     }
 
     async fn run(&self) {
         loop {
+            self.unhandle.store(false, Ordering::Release);
             self.inner.lock().unwrap().reset_raft();
             match self.role() {
                 Role::Leader => self.run_leader().await,
@@ -100,6 +112,7 @@ impl RaftHandle {
     /// ## leader functions
 
     async fn run_leader(&self) {
+        warn!("heiheihei new leader {self:?}");
         let mut heartbeat_tasks = FuturesUnordered::new();
         self.peers
             .iter()
@@ -124,7 +137,7 @@ impl RaftHandle {
             let mut step: u64 = 1;
             let mut offset: usize = 0;
             let mut append_entry = true;
-            loop {
+            'single_follower: loop {
                 if append_entry {
                     // Try until logs match
                     let (rpc, new_next) = {
@@ -142,7 +155,6 @@ impl RaftHandle {
                     let rpc = rpc.fuse();
                     let persist = self.persist().fuse();
                     pin_mut!(rpc, persist);
-                    let mut complete = false;
                     loop {
                         select_biased! {
                             _ = persist => continue,
@@ -152,7 +164,7 @@ impl RaftHandle {
                                         let mut inner = self.inner.lock().unwrap();
                                         match inner.handle_append_entry(id, reply, new_next, step) {
                                             // AppendEntry accepted.
-                                            0 => { complete = true; break; },
+                                            0 => break 'single_follower,
                                             // retry due to log mismatch.
                                             1 => { step <<= 2; break; },
                                             // follower lag too much, send snapshot.
@@ -168,9 +180,6 @@ impl RaftHandle {
                             },
                         }
                     } // loop select
-                    if complete {
-                        break;
-                    }
                 } else {
                     // Send snapshot to follower.
                     let (rpc, done, new_next) = {
@@ -184,7 +193,6 @@ impl RaftHandle {
                     let rpc = rpc.fuse();
                     let persist = self.persist().fuse();
                     pin_mut!(rpc, persist);
-                    let mut complete = false;
                     loop {
                         select_biased! {
                             _ = persist => continue,
@@ -196,11 +204,11 @@ impl RaftHandle {
                                             // InstallSnapshot accepted.
                                             0 => {
                                                 if done {
-                                                    complete = true;
+                                                    break 'single_follower;
                                                 } else {
                                                     offset += SNAPSHOT_SIZE;
+                                                    break;
                                                 }
-                                                break;
                                             },
                                             // turn follower
                                             -1 => return,
@@ -213,29 +221,31 @@ impl RaftHandle {
                             },
                         }
                     } // loop select
-                    if complete {
-                        break;
-                    }
                 }
             } // loop retry
-              // Heartbeat interval
-            sleep(Self::heartbeat_timeout()).await;
+
+            // Heartbeat interval
+            // sleep(Self::heartbeat_timeout()).await;
+            for _ in 0..10 {
+                if self.unhandle.load(Ordering::Acquire) {
+                    self.unhandle.store(false, Ordering::Relaxed);
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
         } // loop heartbeat
     }
 
     async fn apply(&self) {
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.update_commit_index(false);
-            inner.apply();
-        }
         loop {
-            // Update commit_index every 100 milliseconds.
-            sleep(Duration::from_millis(100)).await;
-            // update `commit_index` due to `match_index`, and apply logs.
-            let mut inner = self.inner.lock().unwrap();
-            inner.update_commit_index(true);
-            inner.apply();
+            self.unhandle.store(false, Ordering::Release);
+            {
+                // update `commit_index` due to `match_index`, and apply logs.
+                let mut inner = self.inner.lock().unwrap();
+                inner.update_commit_index(true);
+                inner.apply();
+            }
+            sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -520,11 +530,12 @@ impl RaftHandle {
     }
 
     fn election_timeout() -> Duration {
-        Duration::from_millis(rand::rng().gen_range(150..300))
+        Duration::from_millis(rand::rng().gen_range(200..450))
     }
 
+    #[allow(dead_code)]
     fn heartbeat_timeout() -> Duration {
-        Duration::from_millis(50)
+        Duration::from_millis(100)
     }
 }
 

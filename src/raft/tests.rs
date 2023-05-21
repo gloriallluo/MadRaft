@@ -131,7 +131,6 @@ async fn basic_agree_2b() {
 /// check, based on counting bytes of RPCs, that each command is sent to each
 /// peer just once.
 #[madsim::test]
-#[ignore]
 async fn rpc_bytes_2b() {
     let servers = 3;
 

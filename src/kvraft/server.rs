@@ -99,14 +99,24 @@ impl<S: State> Server<S> {
                             let mut kv_output = this.res.lock().unwrap();
                             let mut last_applied = this.last_applied.lock().unwrap();
                             let mut last_output = this.last_output.lock().unwrap();
+                            let mut not_applied = false;
 
                             // not applied in state machine
                             if Some(&seq) != last_applied.get(&client) {
+                                not_applied = true;
                                 let mut state = this.state.lock().unwrap();
                                 let output = state.apply(command);
                                 last_applied.insert(client, seq);
                                 last_output.insert(client, output.clone());
                                 kv_output.output.insert(seq, output);
+                            }
+
+                            if let Some(waker) = kv_output.waker.remove(&seq) {
+                                waker.wake();
+                            }
+
+                            if not_applied {
+                                let state = this.state.lock().unwrap();
                                 snapshot = if this.raft.log_size() > max_log_size / 2 {
                                     Some(
                                         bincode::serialize(&(
@@ -119,10 +129,6 @@ impl<S: State> Server<S> {
                                 } else {
                                     None
                                 };
-                            }
-
-                            if let Some(waker) = kv_output.waker.remove(&seq) {
-                                waker.wake();
                             }
                         }
 

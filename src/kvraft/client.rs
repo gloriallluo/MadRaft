@@ -33,7 +33,10 @@ impl Clerk {
     }
 
     pub async fn append(&self, key: String, value: String) {
+        let t0 = Instant::now();
         self.core.call(Op::Append { key, value }).await;
+        let t1 = t0.elapsed();
+        info!("Clerk call: {:?}", t1);
     }
 }
 
@@ -82,6 +85,7 @@ where
                     return res;
                 }
                 Ok(Err(e)) => {
+                    warn!("call {args:?} -> an error {e:?}");
                     cur = match e {
                         // The server is not Leader.
                         Error::NotLeader { hint } => hint,

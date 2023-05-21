@@ -133,6 +133,7 @@ impl Raft {
         // is leader
         let term = self.state.term;
         let index = self.state.logs.end();
+        info!("start ({term}, {index})");
         self.state.logs.push(LogEntry {
             term,
             index,
