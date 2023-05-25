@@ -85,7 +85,7 @@ where
                     return res;
                 }
                 Ok(Err(e)) => {
-                    warn!("call {args:?} -> an error {e:?}");
+                    debug!("call {args:?} -> an error {e:?}");
                     cur = match e {
                         // The server is not Leader.
                         Error::NotLeader { hint } => hint,
