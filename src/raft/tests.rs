@@ -1064,7 +1064,8 @@ async fn snapshot_all_crash_2d() {
 
     for _iter in 0..iters {
         // enough to get a snapshot
-        for _ in 0..=SNAPSHOT_INTERVAL {
+        let nn = SNAPSHOT_INTERVAL / 2 + random.gen_range(0..SNAPSHOT_INTERVAL);
+        for _ in 0..nn {
             t.one(random.gen_entry(), servers, true).await;
         }
         let index1 = t.one(random.gen_entry(), servers, true).await;
@@ -1081,7 +1082,7 @@ async fn snapshot_all_crash_2d() {
 
         let index2 = t.one(random.gen_entry(), servers, true).await;
         assert!(
-            index2 > index1,
+            index2 >= index1 + 1,
             "index decreased from {} to {}",
             index1,
             index2
