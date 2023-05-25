@@ -6,7 +6,7 @@ use crate::porcupine::{
     Entry, Error, Model, Operation, Result,
 };
 use bit_vec::BitVec;
-use std::{collections::HashMap, fmt, mem, sync::atomic::Ordering};
+use std::{collections::HashMap, fmt, mem};
 
 #[derive(Debug)]
 pub(crate) struct LinearizationInfo {}
@@ -45,9 +45,6 @@ fn check_single<M: Model>(history: Vec<Entry<M>>, _verbose: bool) -> Result<()> 
     let mut state = M::init();
 
     while !undecided.is_empty() {
-        if killed.load(Ordering::Relaxed) {
-            return CheckResult::Unknown;
-        }
         if matches!(entry.value, EntryValue::Call(_)) {
             debug!("id={} call", entry.id);
             // the matched return entry
