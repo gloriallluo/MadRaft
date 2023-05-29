@@ -88,17 +88,12 @@ impl State {
 
 /// # Role
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
+    #[default]
     Follower,
     Candidate,
     Leader,
-}
-
-impl Default for Role {
-    fn default() -> Self {
-        Role::Follower
-    }
 }
 
 /// # Raft

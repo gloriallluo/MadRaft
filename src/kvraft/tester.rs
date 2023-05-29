@@ -2,7 +2,6 @@ use crate::porcupine::{
     kv::{KvInput, KvModel, KvOp, KvOutput},
     model::Operation,
 };
-use lazy_static::lazy_static;
 use madsim::{time::*, Handle, LocalHandle};
 use std::{
     net::SocketAddr,
@@ -140,6 +139,7 @@ impl Tester {
             handle: self.handle.local_handle(id.to_addr()),
             ck: Arc::new(client::Clerk::new(self.addrs.clone())),
             ops: self.ops.clone(),
+            t0: self.t0,
         }
     }
 
@@ -217,10 +217,6 @@ impl Tester {
     }
 }
 
-lazy_static! {
-    static ref T0: Instant = Instant::now();
-}
-
 #[derive(Debug)]
 pub struct OpLog {
     operations: Mutex<Vec<Operation<KvModel>>>,
@@ -254,6 +250,7 @@ pub struct Clerk {
     id: ClerkId,
     ck: Arc<client::Clerk>,
     ops: Arc<AtomicUsize>,
+    t0: Instant,
 }
 
 impl Clerk {
@@ -274,9 +271,9 @@ impl Clerk {
     }
 
     pub async fn put_and_log(&self, key: &str, value: &str, log: &Arc<OpLog>) {
-        let start = T0.elapsed().as_micros();
+        let start = self.t0.elapsed().as_micros();
         self.put(key, value).await;
-        let end = T0.elapsed().as_micros();
+        let end = self.t0.elapsed().as_micros();
         log.append(Operation {
             client_id: Some(self.id.0),
             input: KvInput {
@@ -305,9 +302,9 @@ impl Clerk {
     }
 
     pub async fn append_and_log(&self, key: &str, value: &str, log: &Arc<OpLog>) {
-        let start = T0.elapsed().as_micros();
+        let start = self.t0.elapsed().as_micros();
         self.append(key, value).await;
-        let end = T0.elapsed().as_micros();
+        let end = self.t0.elapsed().as_micros();
         log.append(Operation {
             client_id: Some(self.id.0),
             input: KvInput {
@@ -331,9 +328,9 @@ impl Clerk {
     }
 
     pub async fn get_and_log(&self, key: &str, log: &Arc<OpLog>) -> String {
-        let start = T0.elapsed().as_micros();
+        let start = self.t0.elapsed().as_micros();
         let value = self.get(key).await;
-        let end = T0.elapsed().as_micros();
+        let end = self.t0.elapsed().as_micros();
         log.append(Operation {
             client_id: Some(self.id.0),
             input: KvInput {
