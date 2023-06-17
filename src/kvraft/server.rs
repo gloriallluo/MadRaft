@@ -139,7 +139,7 @@ impl<S: State> Server<S> {
                     }
                     raft::ApplyMsg::Snapshot { data, index, term } => {
                         if this.raft.cond_install_snapshot(term, index, &data).await {
-                            let snapshot: Snapshot<S> = bincode::deserialize(&data).unwrap(); // BUG unexpected EOF
+                            let snapshot = bincode::deserialize::<Snapshot<S>>(&data).unwrap();
                             *this.state.lock().unwrap() = snapshot.0;
                             *this.last_applied.lock().unwrap() = snapshot.1;
                             *this.last_output.lock().unwrap() = snapshot.2;

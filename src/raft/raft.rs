@@ -36,7 +36,7 @@ pub enum ApplyMsg {
     },
 }
 
-pub const SNAPSHOT_SIZE: usize = 0x8000;
+pub const SNAPSHOT_SIZE: usize = 0xe000;
 const RPC_TIMEOUT: Duration = Duration::from_millis(40);
 
 /// # Start
@@ -547,7 +547,6 @@ impl Raft {
         self.snapshot_done = args.done;
         self.state.logs.trim_to(args.last_included_index + 1);
         self.state.commit_index = args.last_included_index + 1;
-
         self.apply();
         reply
     }

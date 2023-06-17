@@ -535,6 +535,6 @@ impl RaftHandle {
 
 impl fmt::Debug for RaftHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<{}>", self.me)
+        write!(f, "({}, {:?})", self.me, self.role())
     }
 }
