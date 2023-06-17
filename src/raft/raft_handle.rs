@@ -1,6 +1,9 @@
 use crate::raft::{args::*, log::*, raft::*};
 use futures::{
-    channel::mpsc, join, pin_mut, select_biased, stream::FuturesUnordered, FutureExt, StreamExt,
+    channel::mpsc::{self, channel, Receiver},
+    join, pin_mut, select_biased,
+    stream::FuturesUnordered,
+    FutureExt, StreamExt,
 };
 use madsim::{
     fs, net,
@@ -42,7 +45,6 @@ pub struct RaftHandle {
     me: usize,
     peers: Vec<SocketAddr>,
     inner: Arc<Mutex<Raft>>,
-    // unhandle: Arc<AtomicBool>,
 }
 
 impl RaftHandle {
@@ -61,14 +63,9 @@ impl RaftHandle {
             snapshot: Vec::new(),
             snapshot_done: true,
             log_size: 0,
+            start_tx: Vec::new(),
         }));
-        // let unhandle = Arc::new(AtomicBool::new(false));
-        let handle = RaftHandle {
-            me,
-            peers,
-            inner,
-            // unhandle,
-        };
+        let handle = RaftHandle { me, peers, inner };
         // initialize from state persisted before a crash
         handle.restore().await.expect("Failed to restore");
         handle.start_rpc_server();
@@ -86,7 +83,6 @@ impl RaftHandle {
     /// Raft log, since the leader may fail or lose an election.
     pub async fn start(&self, cmd: &[u8]) -> Result<Start> {
         let mut raft = self.inner.lock().unwrap();
-        // self.unhandle.store(true, Ordering::Release);
         raft.start(cmd)
     }
 
@@ -110,14 +106,18 @@ impl RaftHandle {
 
     async fn run_leader(&self) {
         info!("heiheihei new leader {self:?}");
+        let mut start_tx = vec![];
         let mut heartbeat_tasks = FuturesUnordered::new();
         self.peers
             .iter()
             .enumerate()
             .filter(|(i, _)| i != &self.me)
             .for_each(|(i, _)| {
-                heartbeat_tasks.push(self.heartbeat(i));
+                let (tx, rx) = channel(1);
+                start_tx.push(tx);
+                heartbeat_tasks.push(self.heartbeat(i, rx));
             });
+        self.inner.lock().unwrap().start_tx = start_tx;
         let apply_task = self.apply().fuse();
         pin_mut!(apply_task);
         select_biased! {
@@ -128,7 +128,7 @@ impl RaftHandle {
     }
 
     /// Send AppendEntry or InstallSnapshot to followers
-    async fn heartbeat(&self, id: usize) {
+    async fn heartbeat(&self, id: usize, mut rx: Receiver<()>) {
         loop {
             // Send heartbeat messages to follower every 50 milliseconds.
             let mut step: u64 = 1;
@@ -222,27 +222,24 @@ impl RaftHandle {
             } // loop retry
 
             // Heartbeat interval
-            sleep(Self::heartbeat_timeout()).await;
-            // for _ in 0..10 {
-            //     if self.unhandle.load(Ordering::Acquire) {
-            //         self.unhandle.store(false, Ordering::Relaxed);
-            //         break;
-            //     }
-            //     sleep(Duration::from_millis(10)).await;
-            // }
+            let sleep_task = sleep(Self::heartbeat_timeout()).fuse();
+            pin_mut!(sleep_task);
+            select_biased! {
+                _ = rx.select_next_some() => {},
+                _ = sleep_task => {},
+            }
         } // loop heartbeat
     }
 
     async fn apply(&self) {
         loop {
-            // self.unhandle.store(false, Ordering::Release);
             {
                 // update `commit_index` due to `match_index`, and apply logs.
                 let mut inner = self.inner.lock().unwrap();
                 inner.update_commit_index(true);
                 inner.apply();
             }
-            sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(13)).await;
         }
     }
 

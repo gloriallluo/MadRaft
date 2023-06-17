@@ -3,7 +3,11 @@ use crate::raft::{
     log::*,
     raft_handle::{RPCResult, Result},
 };
-use futures::{channel::mpsc, stream::FuturesUnordered, Future};
+use futures::{
+    channel::mpsc::{self, Sender},
+    stream::FuturesUnordered,
+    Future,
+};
 use madsim::{net, time::*};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -88,17 +92,12 @@ impl State {
 
 /// # Role
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
+    #[default]
     Follower,
     Candidate,
     Leader,
-}
-
-impl Default for Role {
-    fn default() -> Self {
-        Role::Follower
-    }
 }
 
 /// # Raft
@@ -122,6 +121,8 @@ pub struct Raft {
     pub(crate) snapshot_done: bool,
 
     pub(crate) log_size: usize,
+
+    pub(crate) start_tx: Vec<Sender<()>>,
 }
 
 impl Raft {
@@ -139,11 +140,14 @@ impl Raft {
             index,
             data: data.into(),
         });
+        for tx in self.start_tx.iter_mut() {
+            tx.try_send(()).ok();
+        }
         Ok(Start { term, index })
     }
 
     pub(crate) fn apply(&mut self) {
-        if self.state.commit_index < self.state.logs.begin() {
+        if self.state.commit_index < self.state.logs.begin() || !self.snapshot_done {
             return;
         }
 
@@ -190,13 +194,16 @@ impl Raft {
                 self.snapshot_done = true;
                 self.state.next_index.fill(self.state.logs.end());
                 self.state.match_index.fill(self.state.logs.begin());
+                self.start_tx.clear();
             }
             Role::Candidate => {
                 self.state.term += 1;
                 self.state.voted_for = Some(self.me);
+                self.start_tx.clear();
             }
             Role::Follower => {
                 self.snapshot_done = true;
+                self.start_tx.clear();
             }
         }
     }
